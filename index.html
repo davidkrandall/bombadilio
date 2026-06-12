@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#15161a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Bombadilio" />
+  <title>Bombadilio · Stage Book</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #15161a; }
+    body { -webkit-text-size-adjust: 100%; }
+    /* Loading state shown until React mounts */
+    #boot {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      color: #6c6a62; font-family: -apple-system, "Inter", system-ui, sans-serif; font-size: 14px;
+      letter-spacing: .04em;
+    }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js" crossorigin></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.4/babel.min.js" crossorigin></script>
+</head>
+<body>
+  <div id="root"><div id="boot">Loading stage book…</div></div>
+  <script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+
+/* ============================================================
+   PUZZLE SLUTS — STAGE BOOK
+   A live cheat-sheet for piano/guitar. Three views per song:
+     • Chart   — sections + chord progression + first-line cue
+     • Full    — chords floating above lyrics, color-coded
+     • Source  — the lyrics exactly as originally written
+   Capo songs default to CONCERT pitch (for piano); a per-song
+   toggle flips to the written capo shapes (for guitar).
+   Set order & capo prefs persist across sessions via localStorage.
+   ============================================================ */
+
+/* ---- music theory: transpose for the Source-view + chord chips ---- */
+const NOTES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const FLAT2SHARP = { Db:"C#", Eb:"D#", Gb:"F#", Ab:"G#", Bb:"A#" };
+function transpose(chord, semis) {
+  if (!semis) return chord;
+  const shift = (tok) => {
+    const m = /^([A-G][#b]?)(.*)$/.exec(tok);
+    if (!m) return tok;
+    let root = m[1];
+    root = FLAT2SHARP[root] || root;
+    const i = NOTES.indexOf(root);
+    if (i < 0) return tok;
+    return NOTES[(i + semis) % 12] + m[2];
+  };
+  if (chord.includes("/")) {
+    const [a, b] = chord.split("/");
+    return shift(a) + "/" + shift(b);
+  }
+  return shift(chord);
+}
+
+/* Stable color per pitch-class so a given chord always reads the same hue.
+   Tuned for a dark stage: bright, distinct, legible at a glance. */
+const CHORD_HUES = {
+  C:"#7CC4FF", "C#":"#5AA9FF",
+  D:"#6FE3C2", "D#":"#46D6A8",
+  E:"#B7E36F",
+  F:"#F2D45C", "F#":"#F5BE3E",
+  G:"#FF9F66", "G#":"#FF8A5C",
+  A:"#FF7C9C", "A#":"#FF6FB5",
+  B:"#C79BFF",
+};
+function chordColor(sym) {
+  const m = /^([A-G][#b]?)/.exec(sym || "");
+  let root = m ? m[1] : "C";
+  root = FLAT2SHARP[root] || root;
+  return CHORD_HUES[root] || "#E7E2D8";
+}
+
+/* ---- persistence helpers (graceful if storage is unavailable) ---- */
+const ORDER_KEY = "stagebook:setorder:v1";
+const CAPOPREF_KEY = "stagebook:capopref:v1"; // per-song: true = show written capo shapes
+
+async function loadJSON(key, fallback) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw != null) return JSON.parse(raw);
+  } catch (e) { /* unavailable or unparseable */ }
+  return fallback;
+}
+async function saveJSON(key, value) {
+  try { window.localStorage.setItem(key, JSON.stringify(value)); }
+  catch (e) { /* ignore — session still works in-memory */ }
+}
+
+const SONG_DATA = {"songs":[{"id":3,"title":"The Faerie King","capo":3,"tempo":null,"transpose":3,"originalArtist":null,"writtenChords":["D","A","E","G"],"concertChords":["F","C","G","A#"],"cheat":[{"name":"Intro","cue":"","rowsWritten":[["D","A","D","A","D","A","E"]],"rowsConcert":[["F","C","F","C","F","C","G"]]},{"name":"Verse 1","cue":"I'll tell you of a time","rowsWritten":[["D","A"],["D","A"],["D","A"],["E"],["D","A"],["D","A"],["D","A"],["E"]],"rowsConcert":[["F","C"],["F","C"],["F","C"],["G"],["F","C"],["F","C"],["F","C"],["G"]]},{"name":"Verse 2","cue":"But the Lord of the Faeries","rowsWritten":[["D","A"],["D","A"],["D","A"],["E"],["D","A"],["D","A"],["D","A"],["E"]],"rowsConcert":[["F","C"],["F","C"],["F","C"],["G"],["F","C"],["F","C"],["F","C"],["G"]]},{"name":"Faerie King 1","cue":"*And he said listen to me","rowsWritten":[["G","D","A"],["G","D","A"],["G","D","A"],["G","D","E"]],"rowsConcert":[["A#","F","C"],["A#","F","C"],["A#","F","C"],["A#","F","G"]]},{"name":"Verse 3","cue":"Hey there, little guy","rowsWritten":[["D","A"],["D","A"],["D","A"],["E"],["D","A"],["D","A"],["D","A"],["E"]],"rowsConcert":[["F","C"],["F","C"],["F","C"],["G"],["F","C"],["F","C"],["F","C"],["G"]]},{"name":"Chorus","cue":"And raise your glasses high","rowsWritten":[["G","D","A"],["G","D","A"],["G","D","A"],["G","D","E"]],"rowsConcert":[["A#","F","C"],["A#","F","C"],["A#","F","C"],["A#","F","G"]]},{"name":"Faerie King 2","cue":"*But the Lord says be chaste*","rowsWritten":[["D","A"],["D","A"],["D","A"],["D","A"]],"rowsConcert":[["F","C"],["F","C"],["F","C"],["F","C"]]},{"name":"Verse 4","cue":"We're gonna laugh, we’re gonna sing","rowsWritten":[["D","A"],["D","A"],["D","A"],["E"],["D","A"],["D","A"],["D","A"],["E"]],"rowsConcert":[["F","C"],["F","C"],["F","C"],["G"],["F","C"],["F","C"],["F","C"],["G"]]}],"sections":[{"name":"Intro","lines":[{"lyric":"","chords":[{"sym":"D","pos":0},{"sym":"A","pos":0},{"sym":"D","pos":0},{"sym":"A","pos":0},{"sym":"D","pos":0},{"sym":"A","pos":0},{"sym":"E","pos":0}],"annotations":[],"chordsOnly":true}]},{"name":"Verse 1","lines":[{"lyric":" I'll tell you of a  time","chords":[{"sym":"D","pos":0},{"sym":"A","pos":20}],"annotations":[],"chordsOnly":false},{"lyric":"When the  Earth was new and  bright","chords":[{"sym":"D","pos":9},{"sym":"A","pos":28}],"annotations":[],"chordsOnly":false},{"lyric":" And the children of the  faerie people","chords":[{"sym":"D","pos":0},{"sym":"A","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":"Would  dance from dawn to night, singing","chords":[{"sym":"E","pos":6}],"annotations":[],"chordsOnly":false},{"lyric":" Tra-la-la-la  la-la","chords":[{"sym":"D","pos":0},{"sym":"A","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":" Tra-la-la-la  la","chords":[{"sym":"D","pos":0},{"sym":"A","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":" Tra-la-la-la  la-la","chords":[{"sym":"D","pos":0},{"sym":"A","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":" Tra-la-la-la-la","chords":[{"sym":"E","pos":0}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 2","lines":[{"lyric":"But the  Lord of the  Faeries","chords":[{"sym":"D","pos":8},{"sym":"A","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"Was a  righteous little  guy","chords":[{"sym":"D","pos":6},{"sym":"A","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"And he  came down to  preach","chords":[{"sym":"D","pos":7},{"sym":"A","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"From his  throne high in the sky","chords":[{"sym":"E","pos":9}],"annotations":[],"chordsOnly":false},{"lyric":"And his  voice was shrill and  whiny","chords":[{"sym":"D","pos":8},{"sym":"A","pos":30}],"annotations":[],"chordsOnly":false},{"lyric":"As a  faeries voice should  be","chords":[{"sym":"D","pos":5},{"sym":"A","pos":27}],"annotations":[],"chordsOnly":false},{"lyric":"His  words inscribed on  plates of gold","chords":[{"sym":"D","pos":4},{"sym":"A","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"For  all the realm to see","chords":[{"sym":"E","pos":4}],"annotations":[],"chordsOnly":false}]},{"name":"Faerie King 1","lines":[{"lyric":"*And he said  listen  to me  well*","chords":[{"sym":"G","pos":13},{"sym":"D","pos":21},{"sym":"A","pos":28}],"annotations":[],"chordsOnly":false},{"lyric":"*Because **you’re**  all  going to  hell*","chords":[{"sym":"G","pos":20},{"sym":"D","pos":25},{"sym":"A","pos":35}],"annotations":[],"chordsOnly":false},{"lyric":"* Listen  to me  well*","chords":[{"sym":"G","pos":1},{"sym":"D","pos":9},{"sym":"A","pos":16}],"annotations":[],"chordsOnly":false},{"lyric":"*Because soon  **you’ll** all  burn in  hell*","chords":[{"sym":"G","pos":14},{"sym":"D","pos":30},{"sym":"E","pos":39}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 3","lines":[{"lyric":" Hey there, little  guy","chords":[{"sym":"D","pos":0},{"sym":"A","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":" Why are you so up-  tight","chords":[{"sym":"D","pos":0},{"sym":"A","pos":20}],"annotations":[],"chordsOnly":false},{"lyric":" Love is pure and  magical","chords":[{"sym":"D","pos":0},{"sym":"A","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"So  whatcha tryin’ to fight?","chords":[{"sym":"E","pos":3}],"annotations":[],"chordsOnly":false},{"lyric":"We’re gonna  smoke, we’re gonna  drink","chords":[{"sym":"D","pos":12},{"sym":"A","pos":32}],"annotations":[],"chordsOnly":false},{"lyric":"Run  naked in the  grass","chords":[{"sym":"D","pos":4},{"sym":"A","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"So  take your golden  plates","chords":[{"sym":"D","pos":3},{"sym":"A","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"And  shove em’ up your ass","chords":[{"sym":"E","pos":4}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"And  raise your  glasses  high","chords":[{"sym":"G","pos":4},{"sym":"D","pos":16},{"sym":"A","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":"For to-  morrow  we may  die","chords":[{"sym":"G","pos":8},{"sym":"D","pos":16},{"sym":"A","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"Yeah,  raise your  glasses  high","chords":[{"sym":"G","pos":6},{"sym":"D","pos":18},{"sym":"A","pos":27}],"annotations":[],"chordsOnly":false},{"lyric":"For to-  morrow  we may  die","chords":[{"sym":"G","pos":8},{"sym":"D","pos":16},{"sym":"E","pos":24}],"annotations":[],"chordsOnly":false}]},{"name":"Faerie King 2","lines":[{"lyric":"*But the  Lord says  be chaste*","chords":[{"sym":"D","pos":9},{"sym":"A","pos":20}],"annotations":[],"chordsOnly":false},{"lyric":"*And  **don't** stay out too  late*","chords":[{"sym":"D","pos":5},{"sym":"A","pos":29}],"annotations":[],"chordsOnly":false},{"lyric":"* Never laugh out  loud*","chords":[{"sym":"D","pos":1},{"sym":"A","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"*And  **don’t** dare  **masturba**-a-a-te*","chords":[{"sym":"D","pos":5},{"sym":"A","pos":21}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 4","lines":[{"lyric":"We're gonna  laugh, we’re gonna  sing","chords":[{"sym":"D","pos":12},{"sym":"A","pos":32}],"annotations":[],"chordsOnly":false},{"lyric":"We're gonna  dance and flick our  beans","chords":[{"sym":"D","pos":12},{"sym":"A","pos":33}],"annotations":[],"chordsOnly":false},{"lyric":"Then we'll  all jump in the  stream","chords":[{"sym":"D","pos":11},{"sym":"A","pos":28}],"annotations":[],"chordsOnly":false},{"lyric":"And  lick each other clean","chords":[{"sym":"E","pos":4}],"annotations":[],"chordsOnly":false},{"lyric":"I  get that you're  scared","chords":[{"sym":"D","pos":2},{"sym":"A","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":" I'm a little scared  too","chords":[{"sym":"D","pos":0},{"sym":"A","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"May I  sell you my  signs","chords":[{"sym":"D","pos":6},{"sym":"A","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":"Or a  token or two","chords":[{"sym":"E","pos":5}],"annotations":[],"chordsOnly":false}]}]},{"id":4,"title":"Put it in the Fire","capo":1,"tempo":null,"transpose":1,"originalArtist":null,"writtenChords":["Dm","Am","F","C","G"],"concertChords":["D#m","A#m","F#","C#","G#"],"cheat":[{"name":"Verse 1","cue":"Sing with me the songs we","rowsWritten":[["Dm","Am"],["Dm","Am"],["Dm","Am"],["Dm","Am"]],"rowsConcert":[["D#m","A#m"],["D#m","A#m"],["D#m","A#m"],["D#m","A#m"]]},{"name":"Chorus","cue":"And we all go down within","rowsWritten":[["F","C","G"],["F","C","G"],["F","C","G"],["F","C","G"],["F","C","G"]],"rowsConcert":[["F#","C#","G#"],["F#","C#","G#"],["F#","C#","G#"],["F#","C#","G#"],["F#","C#","G#"]]},{"name":"Verse 2","cue":"Every lesson I have learned put","rowsWritten":[["Dm","Am"],["Dm","Am"],["Dm","Am"],["Dm","Am"]],"rowsConcert":[["D#m","A#m"],["D#m","A#m"],["D#m","A#m"],["D#m","A#m"]]},{"name":"Chorus","cue":"And we all go down within","rowsWritten":[["F","C","G"],["F","C","G"],["F","C","G"],["F","C","G"],["F","C","G"]],"rowsConcert":[["F#","C#","G#"],["F#","C#","G#"],["F#","C#","G#"],["F#","C#","G#"],["F#","C#","G#"]]},{"name":"Verse 3","cue":"Masks I wear as my disguise","rowsWritten":[["Dm","Am"],["Dm","Am"],["Dm","Am"],["Dm","Am"]],"rowsConcert":[["D#m","A#m"],["D#m","A#m"],["D#m","A#m"],["D#m","A#m"]]},{"name":"Chorus","cue":"And we all go down within","rowsWritten":[["F","C","G"],["F","C","G"],["F","C","G"],["F","C","G"],["F","C","G"],["F","C","G"],["F","C","G"]],"rowsConcert":[["F#","C#","G#"],["F#","C#","G#"],["F#","C#","G#"],["F#","C#","G#"],["F#","C#","G#"],["F#","C#","G#"],["F#","C#","G#"]]}],"sections":[{"name":"Verse 1","lines":[{"lyric":"Sing with me the songs we know  put it in the fire, mama let it go","chords":[{"sym":"Dm","pos":0},{"sym":"Am","pos":31}],"annotations":[],"chordsOnly":false},{"lyric":"Fears I’ve been afraid to show  put it in the fire, mama let it go","chords":[{"sym":"Dm","pos":0},{"sym":"Am","pos":31}],"annotations":[],"chordsOnly":false},{"lyric":"All-time highs and new-time lows  put it in the fire, mama let it go","chords":[{"sym":"Dm","pos":0},{"sym":"Am","pos":33}],"annotations":[],"chordsOnly":false},{"lyric":"Reach the sky and touch your toes  put it in the fire, mama let it go","chords":[{"sym":"Dm","pos":0},{"sym":"Am","pos":34}],"annotations":[],"chordsOnly":false},{"lyric":"Mama let it go, mama let it go","chords":[],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"And we all go down within","chords":[{"sym":"F","pos":7},{"sym":"C","pos":14},{"sym":"G","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":"Deeper  than our skin","chords":[{"sym":"F","pos":0},{"sym":"C","pos":7},{"sym":"G","pos":17}],"annotations":[],"chordsOnly":false},{"lyric":"I’m here with  all my friends","chords":[{"sym":"F","pos":0},{"sym":"C","pos":14},{"sym":"G","pos":22}],"annotations":[],"chordsOnly":false},{"lyric":"Trynafeel myself again","chords":[{"sym":"F","pos":5},{"sym":"C","pos":12},{"sym":"G","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"I canfeel myself again","chords":[{"sym":"F","pos":5},{"sym":"C","pos":12},{"sym":"G","pos":18}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 2","lines":[{"lyric":"Every lesson I have learned  put it in the fire, mama let it burn","chords":[{"sym":"Dm","pos":0},{"sym":"Am","pos":28}],"annotations":[],"chordsOnly":false},{"lyric":"Empty bottles overturned  put it in the fire, mama let it burn","chords":[{"sym":"Dm","pos":0},{"sym":"Am","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":"Sickly sweet, my stomach churns  put it in the fire, mama let it burn","chords":[{"sym":"Dm","pos":0},{"sym":"Am","pos":32}],"annotations":[],"chordsOnly":false},{"lyric":"Not my fault or my concern  put it in the fire, mama let it burn","chords":[{"sym":"Dm","pos":0},{"sym":"Am","pos":27}],"annotations":[],"chordsOnly":false},{"lyric":"Mama let it burn, mama let it burn","chords":[],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"And we all go down within","chords":[{"sym":"F","pos":7},{"sym":"C","pos":14},{"sym":"G","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":"Deeper  than our skin","chords":[{"sym":"F","pos":0},{"sym":"C","pos":7},{"sym":"G","pos":17}],"annotations":[],"chordsOnly":false},{"lyric":"I’m here with  all my friends","chords":[{"sym":"F","pos":0},{"sym":"C","pos":14},{"sym":"G","pos":22}],"annotations":[],"chordsOnly":false},{"lyric":"Trynafeel myself again","chords":[{"sym":"F","pos":5},{"sym":"C","pos":12},{"sym":"G","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"I canfeel myself again","chords":[{"sym":"F","pos":5},{"sym":"C","pos":12},{"sym":"G","pos":18}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 3","lines":[{"lyric":"Masks I wear as my disguise  put it in the fire, mama let it rise","chords":[{"sym":"Dm","pos":0},{"sym":"Am","pos":28}],"annotations":[],"chordsOnly":false},{"lyric":"Joyful tears and anguished cries  put it in the fire, mama let it rise","chords":[{"sym":"Dm","pos":0},{"sym":"Am","pos":33}],"annotations":[],"chordsOnly":false},{"lyric":"Easy does my hard knock life  put it in the fire, mama let it rise","chords":[{"sym":"Dm","pos":0},{"sym":"Am","pos":29}],"annotations":[],"chordsOnly":false},{"lyric":"Can’t quit now although I’ve tried  put it in the fire, mama let it rise","chords":[{"sym":"Dm","pos":0},{"sym":"Am","pos":35}],"annotations":[],"chordsOnly":false},{"lyric":"Mama let it rise, mama let it rise","chords":[],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"And we all go down within","chords":[{"sym":"F","pos":7},{"sym":"C","pos":14},{"sym":"G","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":"Deeper  than our skin","chords":[{"sym":"F","pos":0},{"sym":"C","pos":7},{"sym":"G","pos":17}],"annotations":[],"chordsOnly":false},{"lyric":"I’m here with  all my friends","chords":[{"sym":"F","pos":0},{"sym":"C","pos":14},{"sym":"G","pos":22}],"annotations":[],"chordsOnly":false},{"lyric":"Trynafeel myself again","chords":[{"sym":"F","pos":5},{"sym":"C","pos":12},{"sym":"G","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"I canfeel myself again","chords":[{"sym":"F","pos":5},{"sym":"C","pos":12},{"sym":"G","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"I canfeel myself again","chords":[{"sym":"F","pos":5},{"sym":"C","pos":12},{"sym":"G","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"And thestars willkeep onshining","chords":[{"sym":"F","pos":7},{"sym":"C","pos":17},{"sym":"G","pos":24}],"annotations":[],"chordsOnly":false}]}]},{"id":5,"title":"Austin Nights","capo":5,"tempo":null,"transpose":5,"originalArtist":null,"writtenChords":["G","C"],"concertChords":["C","F"],"cheat":[{"name":"Verse 1","cue":"Never thought that this could be","rowsWritten":[["G","C"],["G","C"],["G","C"],["G","C"],["G","C"],["G","C"],["G","C"],["G","C"]],"rowsConcert":[["C","F"],["C","F"],["C","F"],["C","F"],["C","F"],["C","F"],["C","F"],["C","F"]]},{"name":"Chorus","cue":"See the lights glow","rowsWritten":[["G"],["C"],["G"],["C"],["G"],["C"],["G"],["C","G"]],"rowsConcert":[["C"],["F"],["C"],["F"],["C"],["F"],["C"],["F","C"]]},{"name":"Verse 2","cue":"I’m dancin’ wild like it’s only","rowsWritten":[["G","C"],["G","C"],["G","C"],["G","C"]],"rowsConcert":[["C","F"],["C","F"],["C","F"],["C","F"]]},{"name":"Optional Bridge","cue":"What might have been","rowsWritten":[["G"],["C"],["G","C"],["G"],["C"],["G","C"],["G"]],"rowsConcert":[["C"],["F"],["C","F"],["C"],["F"],["C","F"],["C"]]},{"name":"Verse 4","cue":"Tell me does fate always fuck","rowsWritten":[["G","C"],["G","C"],["G","C"],["G","C"]],"rowsConcert":[["C","F"],["C","F"],["C","F"],["C","F"]]}],"sections":[{"name":"Verse 1","lines":[{"lyric":" Never thought that  this could be","chords":[{"sym":"G","pos":0},{"sym":"C","pos":20}],"annotations":[],"chordsOnly":false},{"lyric":" Did you ever think that  this could really be?","chords":[{"sym":"G","pos":0},{"sym":"C","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":" Your skin so soft right  next to me","chords":[{"sym":"G","pos":0},{"sym":"C","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":" But baby there’s a  world to see","chords":[{"sym":"G","pos":0},{"sym":"C","pos":20}],"annotations":[],"chordsOnly":false},{"lyric":" I smile at nothing  in the breeze","chords":[{"sym":"G","pos":0},{"sym":"C","pos":20}],"annotations":[],"chordsOnly":false},{"lyric":" But I see you smiling  back at me","chords":[{"sym":"G","pos":0},{"sym":"C","pos":23}],"annotations":[],"chordsOnly":false},{"lyric":" Laughing when you  cry","chords":[{"sym":"G","pos":0},{"sym":"C","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":"I’ll still  dry the teardrop  from your eye","chords":[{"sym":"G","pos":11},{"sym":"C","pos":29}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"See the  lights glow","chords":[{"sym":"G","pos":8}],"annotations":[],"chordsOnly":false},{"lyric":"She’s  such a sight","chords":[{"sym":"C","pos":6}],"annotations":[],"chordsOnly":false},{"lyric":"Dreaming  of home","chords":[{"sym":"G","pos":9}],"annotations":[],"chordsOnly":false},{"lyric":"On this  sleepless night","chords":[{"sym":"C","pos":8}],"annotations":[],"chordsOnly":false},{"lyric":"Walk through a  grey  door","chords":[{"sym":"G","pos":15}],"annotations":[{"text":"red","pos":21}],"chordsOnly":false},{"lyric":"A  half-moon light","chords":[{"sym":"C","pos":2}],"annotations":[],"chordsOnly":false},{"lyric":"On an Austin  night","chords":[{"sym":"G","pos":13}],"annotations":[],"chordsOnly":false},{"lyric":" On an Austin  night","chords":[{"sym":"C","pos":0},{"sym":"G","pos":14}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 2","lines":[{"lyric":" I’m dancin’ wild like it’s  only me","chords":[{"sym":"G","pos":0},{"sym":"C","pos":28}],"annotations":[],"chordsOnly":false},{"lyric":" But I feel you dancin’  back at me","chords":[{"sym":"G","pos":0},{"sym":"C","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":" Happy in your  energy","chords":[{"sym":"G","pos":0},{"sym":"C","pos":15}],"annotations":[],"chordsOnly":false},{"lyric":" Baby there’s a  world to see","chords":[{"sym":"G","pos":0},{"sym":"C","pos":16}],"annotations":[],"chordsOnly":false}]},{"name":"Optional Bridge","lines":[{"lyric":"What  might have been","chords":[{"sym":"G","pos":5}],"annotations":[],"chordsOnly":false},{"lyric":"We’ll  never know","chords":[{"sym":"C","pos":6}],"annotations":[],"chordsOnly":false},{"lyric":"So light  up, let’s start the  show","chords":[{"sym":"G","pos":9},{"sym":"C","pos":30}],"annotations":[],"chordsOnly":false},{"lyric":"I’ll be  drunk down Sixth street","chords":[{"sym":"G","pos":8}],"annotations":[],"chordsOnly":false},{"lyric":"In the  half-moon light","chords":[{"sym":"C","pos":7}],"annotations":[],"chordsOnly":false},{"lyric":"And you’ll be  dreaming of me  tonight","chords":[{"sym":"G","pos":14},{"sym":"C","pos":30}],"annotations":[],"chordsOnly":false},{"lyric":"On an Austin  night","chords":[{"sym":"G","pos":13}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 4","lines":[{"lyric":"Tell me does  fate always fuck up  everything","chords":[{"sym":"G","pos":13},{"sym":"C","pos":34}],"annotations":[],"chordsOnly":false},{"lyric":"Or can I  write the song I  want to sing","chords":[{"sym":"G","pos":9},{"sym":"C","pos":27}],"annotations":[],"chordsOnly":false},{"lyric":" Until then I’ll  smile","chords":[{"sym":"G","pos":0},{"sym":"C","pos":17}],"annotations":[],"chordsOnly":false},{"lyric":"But my  heart will break  all the while","chords":[{"sym":"G","pos":7},{"sym":"C","pos":25}],"annotations":[],"chordsOnly":false}]}]},{"id":6,"title":"Let Her Cry","capo":null,"tempo":null,"transpose":0,"originalArtist":"Hootie & the Blowfish","writtenChords":["G","Dsus2","Cadd9","Em7"],"concertChords":["G","Dsus2","Cadd9","Em7"],"cheat":[{"name":"Verse 1","cue":"She sits alone by a lamppost","rowsWritten":[["G","Dsus2"],["Cadd9","G"],["Dsus2"],["Cadd9","G"],["G"],["Dsus2"],["Cadd9","G"],["G","Dsus2"],["Dsus2","Cadd9"],["Cadd9","G"]],"rowsConcert":[["G","Dsus2"],["Cadd9","G"],["Dsus2"],["Cadd9","G"],["G"],["Dsus2"],["Cadd9","G"],["G","Dsus2"],["Dsus2","Cadd9"],["Cadd9","G"]]},{"name":"Chorus","cue":"And just","rowsWritten":[["G"],["G","Cadd9","G"],["G","Cadd9","Em7","Dsus2"],["Dsus2","Cadd9","G"],["G","Dsus2"],["Dsus2","Cadd9"],["Cadd9","G"]],"rowsConcert":[["G"],["G","Cadd9","G"],["G","Cadd9","Em7","Dsus2"],["Dsus2","Cadd9","G"],["G","Dsus2"],["Dsus2","Cadd9"],["Cadd9","G"]]},{"name":"Verse 2","cue":"This morning I woke up alone","rowsWritten":[["G"],["Dsus2"],["Cadd9","G"],["G"],["G","Dsus2"],["Dsus2","Cadd9","G"]],"rowsConcert":[["G"],["Dsus2"],["Cadd9","G"],["G"],["G","Dsus2"],["Dsus2","Cadd9","G"]]},{"name":"Chorus","cue":"And just","rowsWritten":[["G"],["G","Cadd9","G"],["G","Cadd9","Em7","Dsus2"],["Dsus2","Cadd9","G"],["G","Dsus2"],["Dsus2","Cadd9"],["Cadd9","G"]],"rowsConcert":[["G"],["G","Cadd9","G"],["G","Cadd9","Em7","Dsus2"],["Dsus2","Cadd9","G"],["G","Dsus2"],["Dsus2","Cadd9"],["Cadd9","G"]]},{"name":"Solo","cue":"","rowsWritten":[],"rowsConcert":[]},{"name":"Chorus","cue":"And just","rowsWritten":[["G"],["G","Cadd9","G"],["G","Cadd9","Em7","Dsus2"],["Dsus2","Cadd9","G"],["G","Dsus2"],["Dsus2","Cadd9"],["Cadd9","G"]],"rowsConcert":[["G"],["G","Cadd9","G"],["G","Cadd9","Em7","Dsus2"],["Dsus2","Cadd9","G"],["G","Dsus2"],["Dsus2","Cadd9"],["Cadd9","G"]]},{"name":"Verse 3","cue":"Last night I tried to leave","rowsWritten":[["G"],["Dsus2"],["Cadd9","G"],["G"],["Dsus2"],["Dsus2","Cadd9","G"],["G"]],"rowsConcert":[["G"],["Dsus2"],["Cadd9","G"],["G"],["Dsus2"],["Dsus2","Cadd9","G"],["G"]]},{"name":"Chorus","cue":"And just","rowsWritten":[["G"],["G","Cadd9","G"],["G","Cadd9","Em7","Dsus2"],["Dsus2","Cadd9","G"],["G","Dsus2"],["Dsus2","Cadd9"],["Cadd9","G"]],"rowsConcert":[["G"],["G","Cadd9","G"],["G","Cadd9","Em7","Dsus2"],["Dsus2","Cadd9","G"],["G","Dsus2"],["Dsus2","Cadd9"],["Cadd9","G"]]},{"name":"Chorus","cue":"And just","rowsWritten":[["G"],["G","Cadd9","G"],["G","Cadd9","Em7","Dsus2"],["Dsus2","Cadd9","G"],["G","Dsus2"],["Dsus2","Cadd9"],["Cadd9","G"]],"rowsConcert":[["G"],["G","Cadd9","G"],["G","Cadd9","Em7","Dsus2"],["Dsus2","Cadd9","G"],["G","Dsus2"],["Dsus2","Cadd9"],["Cadd9","G"]]}],"sections":[{"name":"Verse 1","lines":[{"lyric":"She sits alone by a lamppost","chords":[{"sym":"G","pos":0},{"sym":"Dsus2","pos":22}],"annotations":[],"chordsOnly":false},{"lyric":"Trying to find a thought that's escaped her mind","chords":[{"sym":"Cadd9","pos":0},{"sym":"G","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"She says dad's the one I love the most","chords":[{"sym":"Dsus2","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":"But Stipe's not far behind","chords":[{"sym":"Cadd9","pos":0},{"sym":"G","pos":11}],"annotations":[],"chordsOnly":false},{"lyric":"She never lets me in","chords":[{"sym":"G","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":"Only tell me where's she's been","chords":[{"sym":"Dsus2","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":"When she's had too much to drink","chords":[{"sym":"Cadd9","pos":0},{"sym":"G","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":"I say that I don't care I just run my hands","chords":[{"sym":"G","pos":0},{"sym":"Dsus2","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"Through her dark hair and then I pray to god","chords":[{"sym":"Dsus2","pos":0},{"sym":"Cadd9","pos":22}],"annotations":[],"chordsOnly":false},{"lyric":"You gotta help me fly away","chords":[{"sym":"Cadd9","pos":0},{"sym":"G","pos":10}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"And just","chords":[{"sym":"G","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":"Let her cry if the tears fall down like rain","chords":[{"sym":"G","pos":0},{"sym":"Cadd9","pos":8},{"sym":"G","pos":12}],"annotations":[],"chordsOnly":false},{"lyric":"Let her sing if it eases all her pain","chords":[{"sym":"G","pos":0},{"sym":"Cadd9","pos":8},{"sym":"Em7","pos":16},{"sym":"Dsus2","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":"Let her go let her walk right out on me","chords":[{"sym":"Dsus2","pos":0},{"sym":"Cadd9","pos":8},{"sym":"G","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"And if the sun comes up tomorrow","chords":[{"sym":"G","pos":0},{"sym":"Dsus2","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"Let her be","chords":[{"sym":"Dsus2","pos":0},{"sym":"Cadd9","pos":8}],"annotations":[],"chordsOnly":false},{"lyric":"let her be","chords":[{"sym":"Cadd9","pos":0},{"sym":"G","pos":8}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 2","lines":[{"lyric":"This morning I woke up alone","chords":[{"sym":"G","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":"Found a note by the phone","chords":[{"sym":"Dsus2","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":"Saying maybe, maybe I'll be back some day","chords":[{"sym":"Cadd9","pos":0},{"sym":"G","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":"I wanted to look for you","chords":[{"sym":"G","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":"You walked in I didn't know just what I should do","chords":[{"sym":"G","pos":0},{"sym":"Dsus2","pos":13}],"annotations":[],"chordsOnly":false},{"lyric":"So I sat back down and had a beer and felt sorry for myself","chords":[{"sym":"Dsus2","pos":0},{"sym":"Cadd9","pos":16},{"sym":"G","pos":40}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"And just","chords":[{"sym":"G","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":"Let her cry if the tears fall down like rain","chords":[{"sym":"G","pos":0},{"sym":"Cadd9","pos":8},{"sym":"G","pos":12}],"annotations":[],"chordsOnly":false},{"lyric":"Let her sing if it eases all her pain","chords":[{"sym":"G","pos":0},{"sym":"Cadd9","pos":8},{"sym":"Em7","pos":16},{"sym":"Dsus2","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":"Let her go let her walk right out on me","chords":[{"sym":"Dsus2","pos":0},{"sym":"Cadd9","pos":8},{"sym":"G","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"And if the sun comes up tomorrow","chords":[{"sym":"G","pos":0},{"sym":"Dsus2","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"Let her be","chords":[{"sym":"Dsus2","pos":0},{"sym":"Cadd9","pos":8}],"annotations":[],"chordsOnly":false},{"lyric":"let her be","chords":[{"sym":"Cadd9","pos":0},{"sym":"G","pos":8}],"annotations":[],"chordsOnly":false}]},{"name":"Solo","lines":[]},{"name":"Chorus","lines":[{"lyric":"And just","chords":[{"sym":"G","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":"Let her cry if the tears fall down like rain","chords":[{"sym":"G","pos":0},{"sym":"Cadd9","pos":8},{"sym":"G","pos":12}],"annotations":[],"chordsOnly":false},{"lyric":"Let her sing if it eases all her pain","chords":[{"sym":"G","pos":0},{"sym":"Cadd9","pos":8},{"sym":"Em7","pos":16},{"sym":"Dsus2","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":"Let her go let her walk right out on me","chords":[{"sym":"Dsus2","pos":0},{"sym":"Cadd9","pos":8},{"sym":"G","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"And if the sun comes up tomorrow","chords":[{"sym":"G","pos":0},{"sym":"Dsus2","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"Let her be","chords":[{"sym":"Dsus2","pos":0},{"sym":"Cadd9","pos":8}],"annotations":[],"chordsOnly":false},{"lyric":"let her be","chords":[{"sym":"Cadd9","pos":0},{"sym":"G","pos":8}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 3","lines":[{"lyric":"Last night I tried to leave","chords":[{"sym":"G","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":"Cried so much I just could not believe","chords":[{"sym":"Dsus2","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":"She was the same girl I fell in love with long ago","chords":[{"sym":"Cadd9","pos":0},{"sym":"G","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":"She went in the back to get high","chords":[{"sym":"G","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":"I sat down on my couch and cried","chords":[{"sym":"Dsus2","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":"Yelling oh mama please help me","chords":[{"sym":"Dsus2","pos":0},{"sym":"Cadd9","pos":16},{"sym":"G","pos":26}],"annotations":[],"chordsOnly":false},{"lyric":"Won't you hold my hand.","chords":[{"sym":"G","pos":0}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"And just","chords":[{"sym":"G","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":"Let her cry if the tears fall down like rain","chords":[{"sym":"G","pos":0},{"sym":"Cadd9","pos":8},{"sym":"G","pos":12}],"annotations":[],"chordsOnly":false},{"lyric":"Let her sing if it eases all her pain","chords":[{"sym":"G","pos":0},{"sym":"Cadd9","pos":8},{"sym":"Em7","pos":16},{"sym":"Dsus2","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":"Let her go let her walk right out on me","chords":[{"sym":"Dsus2","pos":0},{"sym":"Cadd9","pos":8},{"sym":"G","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"And if the sun comes up tomorrow","chords":[{"sym":"G","pos":0},{"sym":"Dsus2","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"Let her be","chords":[{"sym":"Dsus2","pos":0},{"sym":"Cadd9","pos":8}],"annotations":[],"chordsOnly":false},{"lyric":"let her be","chords":[{"sym":"Cadd9","pos":0},{"sym":"G","pos":8}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"And just","chords":[{"sym":"G","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":"Let her cry if the tears fall down like rain","chords":[{"sym":"G","pos":0},{"sym":"Cadd9","pos":8},{"sym":"G","pos":12}],"annotations":[],"chordsOnly":false},{"lyric":"Let her sing if it eases all her pain","chords":[{"sym":"G","pos":0},{"sym":"Cadd9","pos":8},{"sym":"Em7","pos":16},{"sym":"Dsus2","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":"Let her go let her walk right out on me","chords":[{"sym":"Dsus2","pos":0},{"sym":"Cadd9","pos":8},{"sym":"G","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"And if the sun comes up tomorrow","chords":[{"sym":"G","pos":0},{"sym":"Dsus2","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"Let her be","chords":[{"sym":"Dsus2","pos":0},{"sym":"Cadd9","pos":8}],"annotations":[],"chordsOnly":false},{"lyric":"let her be","chords":[{"sym":"Cadd9","pos":0},{"sym":"G","pos":8}],"annotations":[],"chordsOnly":false}]}]},{"id":7,"title":"Howling","capo":4,"tempo":null,"transpose":4,"originalArtist":null,"writtenChords":["C","G","Am","F"],"concertChords":["E","B","C#m","A"],"cheat":[{"name":"Verse 1","cue":"I remember when you told me","rowsWritten":[["C","G","Am","F","C","G","Am","F"]],"rowsConcert":[["E","B","C#m","A","E","B","C#m","A"]]},{"name":"Chorus","cue":"Aaaaiiiiiiiii Aah aaiiiiiiiiiiii aaiiiiiiiiiiii aaiiiiiiiiiiii Oooooooooooooo","rowsWritten":[["C","G","Am","F","C","G","Am","F"]],"rowsConcert":[["E","B","C#m","A","E","B","C#m","A"]]},{"name":"Verse 2","cue":"I remember when you told me","rowsWritten":[["C","G","Am","F","C","G","Am","F"]],"rowsConcert":[["E","B","C#m","A","E","B","C#m","A"]]},{"name":"Chorus","cue":"Oooooooooooooo Oh oooooooooooooo oooooooooooooo oooooooooooooo","rowsWritten":[["C","G","Am","F"],["C","G","Am","F"]],"rowsConcert":[["E","B","C#m","A"],["E","B","C#m","A"]]},{"name":"Verse 3","cue":"I remember when you told me","rowsWritten":[["C","G","Am","F","C","G","Am","F"]],"rowsConcert":[["E","B","C#m","A","E","B","C#m","A"]]},{"name":"Chorus","cue":"Aaaaaaaaaaaaaa Aaaaaaaaaaaaaa Aaaaaaaaaaaa awhooooooooooooo","rowsWritten":[["C","G","Am","F"],["C","G","Am","F"],["C","G","Am","F"],["C","G","Am","F"]],"rowsConcert":[["E","B","C#m","A"],["E","B","C#m","A"],["E","B","C#m","A"],["E","B","C#m","A"]]},{"name":"Verse 4","cue":"I remember when you told me","rowsWritten":[["C","G","Am","F","C","G","Am","F"]],"rowsConcert":[["E","B","C#m","A","E","B","C#m","A"]]}],"sections":[{"name":"Verse 1","lines":[{"lyric":"I remember when you told me to bury all my  guns. So I buried every  one. But I know where to dig them  up. Yeah you told me to I don’t need to  fight, I don’t even have that  right. But I’ll be black and blue tonight…","chords":[{"sym":"C","pos":20},{"sym":"G","pos":43},{"sym":"Am","pos":68},{"sym":"F","pos":103},{"sym":"C","pos":117},{"sym":"G","pos":144},{"sym":"Am","pos":175},{"sym":"F","pos":212}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"Aaaaiiiiiiiii Aah aaiiiiiiiiiiii  aaiiiiiiiiiiii  aaiiiiiiiiiiii Oooooooooooooo Oh oooooooooooooo  oooooooooooooo  oooooooooooooo","chords":[{"sym":"C","pos":0},{"sym":"G","pos":17},{"sym":"Am","pos":33},{"sym":"F","pos":49},{"sym":"C","pos":65},{"sym":"G","pos":82},{"sym":"Am","pos":98},{"sym":"F","pos":114}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 2","lines":[{"lyric":"I remember when you told me to lower my defences, straddle all my fences, well I don’t like the defencelessness. Yeah you told me it’s a problem with my  substances, they’re not that  substantive but they get me  through to you…","chords":[{"sym":"C","pos":20},{"sym":"G","pos":42},{"sym":"Am","pos":66},{"sym":"F","pos":98},{"sym":"C","pos":122},{"sym":"G","pos":153},{"sym":"Am","pos":183},{"sym":"F","pos":212}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"Oooooooooooooo Oh oooooooooooooo  oooooooooooooo  oooooooooooooo","chords":[{"sym":"C","pos":0},{"sym":"G","pos":17},{"sym":"Am","pos":33},{"sym":"F","pos":49}],"annotations":[],"chordsOnly":false},{"lyric":"Aaaaiiiiiiiii Aah aaiiiiiiiiiiii  aaiiiiiiiiiiii  aaiiiiiiiiiiii","chords":[{"sym":"C","pos":0},{"sym":"G","pos":17},{"sym":"Am","pos":33},{"sym":"F","pos":49}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 3","lines":[{"lyric":"I remember when you told me better to bemild, be more life a little child, but you forgot that I amwild. Yeah you told me I don’t need to  growl, you don’t want to hear me  howl. Well check me out right  now…","chords":[{"sym":"C","pos":20},{"sym":"G","pos":40},{"sym":"Am","pos":68},{"sym":"F","pos":99},{"sym":"C","pos":114},{"sym":"G","pos":138},{"sym":"Am","pos":172},{"sym":"F","pos":203}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"Aaaaaaaaaaaaaa  Aaaaaaaaaaaaaa  Aaaaaaaaaaaa awhooooooooooooo","chords":[{"sym":"C","pos":0},{"sym":"G","pos":15},{"sym":"Am","pos":31},{"sym":"F","pos":46}],"annotations":[],"chordsOnly":false},{"lyric":"Arooooooooo Ow owooooooooooooo  Aroooooooooo Arooooooooooooo","chords":[{"sym":"C","pos":0},{"sym":"G","pos":17},{"sym":"Am","pos":31},{"sym":"F","pos":45}],"annotations":[],"chordsOnly":false},{"lyric":"Arooooooooo Ow owooooooooooooo  Aroooooooooo Arooooooooooooo","chords":[{"sym":"C","pos":0},{"sym":"G","pos":17},{"sym":"Am","pos":31},{"sym":"F","pos":45}],"annotations":[],"chordsOnly":false},{"lyric":"Arooooooooo Ow owooooooooooooo  Aroooooooooo Arooooooooooooo","chords":[{"sym":"C","pos":0},{"sym":"G","pos":17},{"sym":"Am","pos":31},{"sym":"F","pos":45}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 4","lines":[{"lyric":"I remember when you told me to bury all my  guns. So I buried every  one. But I know where to dig them  up. Yeah you told me to I don’t need to  fight, I don’t even have that  right. But I’ll be black and blue tonight.","chords":[{"sym":"C","pos":20},{"sym":"G","pos":43},{"sym":"Am","pos":68},{"sym":"F","pos":103},{"sym":"C","pos":117},{"sym":"G","pos":144},{"sym":"Am","pos":175},{"sym":"F","pos":212}],"annotations":[],"chordsOnly":false}]}]},{"id":8,"title":"Lady Death","capo":null,"tempo":150,"transpose":0,"originalArtist":null,"writtenChords":["F","G","C"],"concertChords":["F","G","C"],"cheat":[{"name":"Refrain","cue":"Death turns to life","rowsWritten":[["F","G"],["C"],["F","G","C"]],"rowsConcert":[["F","G"],["C"],["F","G","C"]]},{"name":"Verse 1","cue":"You felt her story long ago","rowsWritten":[["F","G"],["C"],["F","G"],["C"],["F","G"],["C"],["F","G"],["C"]],"rowsConcert":[["F","G"],["C"],["F","G"],["C"],["F","G"],["C"],["F","G"],["C"]]},{"name":"Verse 2","cue":"Spring comes in a rain of","rowsWritten":[["F","G"],["C"],["F","G"],["C"],["F","G"],["C"],["F","G"],["C"]],"rowsConcert":[["F","G"],["C"],["F","G"],["C"],["F","G"],["C"],["F","G"],["C"]]},{"name":"Chorus","cue":"But if I can feel her","rowsWritten":[["F","G","C"],["F","G","C"],["F","G","C"],["F","G","C"],["F","G","C"]],"rowsConcert":[["F","G","C"],["F","G","C"],["F","G","C"],["F","G","C"],["F","G","C"]]},{"name":"Verse 3","cue":"There’s a room inside of me","rowsWritten":[["F","G"],["C"],["F","G"],["C"],["F","G"],["C"],["F","G"],["C"]],"rowsConcert":[["F","G"],["C"],["F","G"],["C"],["F","G"],["C"],["F","G"],["C"]]},{"name":"Bridge","cue":"You could wander a half a","rowsWritten":[["F","G","C"],["F","G","C"],["F","G"],["C"],["F","G","C"],["G","C"],["F","G","C"],["F","G","C"],["F","G","C"]],"rowsConcert":[["F","G","C"],["F","G","C"],["F","G"],["C"],["F","G","C"],["G","C"],["F","G","C"],["F","G","C"],["F","G","C"]]},{"name":"Verse 4","cue":"And send my love to Lady","rowsWritten":[["F","G"],["C"],["F","G"],["C"],["F","G"],["C"],["F","G"],["C"]],"rowsConcert":[["F","G"],["C"],["F","G"],["C"],["F","G"],["C"],["F","G"],["C"]]},{"name":"Alternate bridge","cue":"Life’s too short","rowsWritten":[],"rowsConcert":[]}],"sections":[{"name":"Refrain","lines":[{"lyric":" Death turns to  life","chords":[{"sym":"F","pos":0},{"sym":"G","pos":16}],"annotations":[],"chordsOnly":false},{"lyric":" Time goes by, singing","chords":[{"sym":"C","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":" Nai na nai na  nai na nai na  Nai","chords":[{"sym":"F","pos":0},{"sym":"G","pos":15},{"sym":"C","pos":30}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 1","lines":[{"lyric":"You  felt her story  long ago","chords":[{"sym":"F","pos":4},{"sym":"G","pos":20}],"annotations":[],"chordsOnly":false},{"lyric":"As she  sank beneath the sea","chords":[{"sym":"C","pos":7}],"annotations":[],"chordsOnly":false},{"lyric":" Rattling bones and  sunken eyes","chords":[{"sym":"F","pos":0},{"sym":"G","pos":20}],"annotations":[],"chordsOnly":false},{"lyric":"A  haunted mystery","chords":[{"sym":"C","pos":2}],"annotations":[],"chordsOnly":false},{"lyric":"On a  night you drifted  far from home","chords":[{"sym":"F","pos":5},{"sym":"G","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"A  curiosity","chords":[{"sym":"C","pos":2}],"annotations":[],"chordsOnly":false},{"lyric":" You and I, the  love we shared","chords":[{"sym":"F","pos":0},{"sym":"G","pos":16}],"annotations":[],"chordsOnly":false},{"lyric":"Could  it no longer be?","chords":[{"sym":"C","pos":6}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 2","lines":[{"lyric":" Spring comes in a  rain of tears","chords":[{"sym":"F","pos":0},{"sym":"G","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":"A  waterfall of pain","chords":[{"sym":"C","pos":2}],"annotations":[],"chordsOnly":false},{"lyric":"But  I still always  dream about you","chords":[{"sym":"F","pos":4},{"sym":"G","pos":20}],"annotations":[],"chordsOnly":false},{"lyric":" What else can I say?","chords":[{"sym":"C","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":" Seven lives for  seven loves","chords":[{"sym":"F","pos":0},{"sym":"G","pos":17}],"annotations":[],"chordsOnly":false},{"lyric":"The  twisted hand of fate","chords":[{"sym":"C","pos":4}],"annotations":[],"chordsOnly":false},{"lyric":"But  if she says our  time has come","chords":[{"sym":"F","pos":4},{"sym":"G","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"Let’s  open all the gates","chords":[{"sym":"C","pos":6}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"But if  I can  feel her  calling","chords":[{"sym":"F","pos":7},{"sym":"G","pos":14},{"sym":"C","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"Maybe  life could  find a  way back through me","chords":[{"sym":"F","pos":6},{"sym":"G","pos":18},{"sym":"C","pos":26}],"annotations":[],"chordsOnly":false},{"lyric":" Life could  find a  way","chords":[{"sym":"F","pos":0},{"sym":"G","pos":12},{"sym":"C","pos":20}],"annotations":[],"chordsOnly":false},{"lyric":" Love could  find a  way back to me","chords":[{"sym":"F","pos":0},{"sym":"G","pos":12},{"sym":"C","pos":20}],"annotations":[],"chordsOnly":false},{"lyric":" Love will  find a  way","chords":[{"sym":"F","pos":0},{"sym":"G","pos":11},{"sym":"C","pos":19}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 3","lines":[{"lyric":" There’s a room  inside of me","chords":[{"sym":"F","pos":0},{"sym":"G","pos":16}],"annotations":[],"chordsOnly":false},{"lyric":"That  only you will see","chords":[{"sym":"C","pos":5}],"annotations":[],"chordsOnly":false},{"lyric":"But  I’ve learned of a  hollow space","chords":[{"sym":"F","pos":4},{"sym":"G","pos":23}],"annotations":[],"chordsOnly":false},{"lyric":"That’s  meant for only me","chords":[{"sym":"C","pos":7}],"annotations":[],"chordsOnly":false},{"lyric":" It could be my  happy place","chords":[{"sym":"F","pos":0},{"sym":"G","pos":16}],"annotations":[],"chordsOnly":false},{"lyric":"But  there’s still room for grief","chords":[{"sym":"C","pos":4}],"annotations":[],"chordsOnly":false},{"lyric":" You could be my  sugarbabe","chords":[{"sym":"F","pos":0},{"sym":"G","pos":17}],"annotations":[],"chordsOnly":false},{"lyric":"And  I’ll just sing for free","chords":[{"sym":"C","pos":4}],"annotations":[],"chordsOnly":false}]},{"name":"Bridge","lines":[{"lyric":" You could  wander a  half a world away","chords":[{"sym":"F","pos":0},{"sym":"G","pos":11},{"sym":"C","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"And  still feel  what you’re  missin'","chords":[{"sym":"F","pos":4},{"sym":"G","pos":16},{"sym":"C","pos":29}],"annotations":[],"chordsOnly":false},{"lyric":"All the  years we’ve  laughed","chords":[{"sym":"F","pos":8},{"sym":"G","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"Are  written in your face","chords":[{"sym":"C","pos":4}],"annotations":[],"chordsOnly":false},{"lyric":"So  let’s  stop  pretending","chords":[{"sym":"F","pos":3},{"sym":"G","pos":10},{"sym":"C","pos":16}],"annotations":[],"chordsOnly":false},{"lyric":"You can {F] try to  cage me  in","chords":[{"sym":"G","pos":19},{"sym":"C","pos":28}],"annotations":[],"chordsOnly":false},{"lyric":"But your  light will  grow more  dim","chords":[{"sym":"F","pos":9},{"sym":"G","pos":21},{"sym":"C","pos":32}],"annotations":[],"chordsOnly":false},{"lyric":"I’d still  sweep you  off your  feet","chords":[{"sym":"F","pos":10},{"sym":"G","pos":21},{"sym":"C","pos":31}],"annotations":[],"chordsOnly":false},{"lyric":"So come  out and  dance with  me","chords":[{"sym":"F","pos":8},{"sym":"G","pos":17},{"sym":"C","pos":29}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 4","lines":[{"lyric":"And  send my love to  Lady Death","chords":[{"sym":"F","pos":4},{"sym":"G","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"I  snagged her up last week","chords":[{"sym":"C","pos":2}],"annotations":[],"chordsOnly":false},{"lyric":"The  fish had feasted  on her flesh","chords":[{"sym":"F","pos":4},{"sym":"G","pos":22}],"annotations":[],"chordsOnly":false},{"lyric":"A  tear ran down my cheek","chords":[{"sym":"C","pos":2}],"annotations":[],"chordsOnly":false},{"lyric":"She  came to me with  baited breath","chords":[{"sym":"F","pos":4},{"sym":"G","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"And  crept into my sheets","chords":[{"sym":"C","pos":4}],"annotations":[],"chordsOnly":false},{"lyric":"I  fed her longing  through the night","chords":[{"sym":"F","pos":2},{"sym":"G","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":"Her  moans woke up the street","chords":[{"sym":"C","pos":4}],"annotations":[],"chordsOnly":false}]},{"name":"Alternate bridge","lines":[{"lyric":"Life’s too short","chords":[],"annotations":[],"chordsOnly":false},{"lyric":"And this world’s our wonderland","chords":[],"annotations":[],"chordsOnly":false},{"lyric":"Let’s taste all we can","chords":[],"annotations":[],"chordsOnly":false},{"lyric":"You and I, babe, were written in the sky","chords":[],"annotations":[],"chordsOnly":false},{"lyric":"Let’s write us again","chords":[],"annotations":[],"chordsOnly":false},{"lyric":"But if we could only see","chords":[],"annotations":[],"chordsOnly":false},{"lyric":"Just don’t call it destiny","chords":[],"annotations":[],"chordsOnly":false},{"lyric":"I’d still sweep you off your feet","chords":[],"annotations":[],"chordsOnly":false},{"lyric":"So come out and dance with me","chords":[],"annotations":[],"chordsOnly":false}]}]},{"id":9,"title":"Waves","capo":null,"tempo":null,"transpose":0,"originalArtist":null,"writtenChords":["G","D","C","Am"],"concertChords":["G","D","C","Am"],"cheat":[{"name":"Verse 1","cue":"Lie awake dream of where you","rowsWritten":[["G","D","C","G"],["G","D","C","G"],["G","D","C","G"],["G","D","C","G"]],"rowsConcert":[["G","D","C","G"],["G","D","C","G"],["G","D","C","G"],["G","D","C","G"]]},{"name":"Chorus","cue":"Feel the wave feel it coming","rowsWritten":[["C","Am","C","G"],["C","Am","C","G"],["C","Am","C","G"],["C","Am","C","G"]],"rowsConcert":[["C","Am","C","G"],["C","Am","C","G"],["C","Am","C","G"],["C","Am","C","G"]]},{"name":"Verse 2","cue":"Trees are bowed saying their own","rowsWritten":[["G","D","C","G"],["G","D","C","G"],["G","D","C","G"],["G","D","C","G"]],"rowsConcert":[["G","D","C","G"],["G","D","C","G"],["G","D","C","G"],["G","D","C","G"]]},{"name":"Chorus","cue":"Feel the wave feel it coming","rowsWritten":[["C","Am","C","G"],["C","Am","C","G"],["C","Am","C","G"],["C","Am","C","G"]],"rowsConcert":[["C","Am","C","G"],["C","Am","C","G"],["C","Am","C","G"],["C","Am","C","G"]]},{"name":"Verse 3","cue":"Find a way to bring you","rowsWritten":[["G","D","C","G"],["G","D","C","G"],["G","D","C","G"],["G","D","C","G"]],"rowsConcert":[["G","D","C","G"],["G","D","C","G"],["G","D","C","G"],["G","D","C","G"]]},{"name":"Chorus","cue":"Feel the wave feel it coming","rowsWritten":[["C","Am","C","G"],["C","Am","C","G"],["C","Am","C","G"],["C","Am","C","G"]],"rowsConcert":[["C","Am","C","G"],["C","Am","C","G"],["C","Am","C","G"],["C","Am","C","G"]]}],"sections":[{"name":"Verse 1","lines":[{"lyric":"Lie awake dream of where you  are","chords":[{"sym":"G","pos":0},{"sym":"D","pos":4},{"sym":"C","pos":10},{"sym":"G","pos":29}],"annotations":[],"chordsOnly":false},{"lyric":"Write your  name out among the  stars","chords":[{"sym":"G","pos":0},{"sym":"D","pos":11},{"sym":"C","pos":17},{"sym":"G","pos":31}],"annotations":[],"chordsOnly":false},{"lyric":"Fly away far across the  sky","chords":[{"sym":"G","pos":0},{"sym":"D","pos":4},{"sym":"C","pos":9},{"sym":"G","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"I will stay I can watch you  cry","chords":[{"sym":"G","pos":0},{"sym":"D","pos":7},{"sym":"C","pos":12},{"sym":"G","pos":28}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"Feel the wave feel it coming down","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":9},{"sym":"C","pos":14},{"sym":"G","pos":29}],"annotations":[],"chordsOnly":false},{"lyric":"Feel the wave crashing all around","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":9},{"sym":"C","pos":14},{"sym":"G","pos":27}],"annotations":[],"chordsOnly":false},{"lyric":"Feel the wave nothing left to fight","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":9},{"sym":"C","pos":14},{"sym":"G","pos":30}],"annotations":[],"chordsOnly":false},{"lyric":"Feel the wave let go learn to ride","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":9},{"sym":"C","pos":14},{"sym":"G","pos":30}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 2","lines":[{"lyric":"Trees are bowed  saying their own grace","chords":[{"sym":"G","pos":0},{"sym":"D","pos":10},{"sym":"C","pos":16},{"sym":"G","pos":34}],"annotations":[],"chordsOnly":false},{"lyric":"Leaves are falling  falling on your face","chords":[{"sym":"G","pos":0},{"sym":"D","pos":11},{"sym":"C","pos":19},{"sym":"G","pos":36}],"annotations":[],"chordsOnly":false},{"lyric":"Body aches waiting for your call","chords":[{"sym":"G","pos":0},{"sym":"D","pos":5},{"sym":"C","pos":11},{"sym":"G","pos":28}],"annotations":[],"chordsOnly":false},{"lyric":"Clouds will break  let the raindrops  fall","chords":[{"sym":"G","pos":0},{"sym":"D","pos":12},{"sym":"C","pos":18},{"sym":"G","pos":37}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"Feel the wave feel it coming down","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":9},{"sym":"C","pos":14},{"sym":"G","pos":29}],"annotations":[],"chordsOnly":false},{"lyric":"Feel the wave crashing all around","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":9},{"sym":"C","pos":14},{"sym":"G","pos":27}],"annotations":[],"chordsOnly":false},{"lyric":"Feel the wave nothing left to fight","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":9},{"sym":"C","pos":14},{"sym":"G","pos":30}],"annotations":[],"chordsOnly":false},{"lyric":"Feel the wave let go learn to ride","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":9},{"sym":"C","pos":14},{"sym":"G","pos":30}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 3","lines":[{"lyric":"Find a way to bring you back again","chords":[{"sym":"G","pos":0},{"sym":"D","pos":7},{"sym":"C","pos":14},{"sym":"G","pos":29}],"annotations":[],"chordsOnly":false},{"lyric":"Call your  name  raise you from the dead","chords":[{"sym":"G","pos":0},{"sym":"D","pos":10},{"sym":"C","pos":16},{"sym":"G","pos":36}],"annotations":[],"chordsOnly":false},{"lyric":"Hide my face you don’t seem so far","chords":[{"sym":"G","pos":0},{"sym":"D","pos":8},{"sym":"C","pos":13},{"sym":"G","pos":31}],"annotations":[],"chordsOnly":false},{"lyric":"Lie awake dream of where you are","chords":[{"sym":"G","pos":0},{"sym":"D","pos":4},{"sym":"C","pos":10},{"sym":"G","pos":29}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"Feel the wave feel it coming down","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":9},{"sym":"C","pos":14},{"sym":"G","pos":29}],"annotations":[],"chordsOnly":false},{"lyric":"Feel the wave crashing all around","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":9},{"sym":"C","pos":14},{"sym":"G","pos":27}],"annotations":[],"chordsOnly":false},{"lyric":"Feel the wave nothing left to fight","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":9},{"sym":"C","pos":14},{"sym":"G","pos":30}],"annotations":[],"chordsOnly":false},{"lyric":"Feel the wave let go learn to ride","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":9},{"sym":"C","pos":14},{"sym":"G","pos":30}],"annotations":[],"chordsOnly":false}]}]},{"id":10,"title":"Hymn of The Nightingale","capo":5,"tempo":null,"transpose":5,"originalArtist":null,"writtenChords":["G","D","C"],"concertChords":["C","G","F"],"cheat":[{"name":"Intro","cue":"Intro:","rowsWritten":[["G","D","C","G"]],"rowsConcert":[["C","G","F","C"]]},{"name":"Chorus","cue":"Lai de dai dai da dai","rowsWritten":[["G","D"],["C","G"],["G","D"],["C","G"]],"rowsConcert":[["C","G"],["F","C"],["C","G"],["F","C"]]},{"name":"Verse 1","cue":"Do you dream of life be-","rowsWritten":[["G","D"],["C","G"],["G","D"],["C","G"],["G","D"],["C","G"],["G","D"],["C","G"],["G","D"],["C","G"],["G","D"],["C","G"]],"rowsConcert":[["C","G"],["F","C"],["C","G"],["F","C"],["C","G"],["F","C"],["C","G"],["F","C"],["C","G"],["F","C"],["C","G"],["F","C"]]},{"name":"Verse 2","cue":"The rain was falling, the pixies","rowsWritten":[["G","D"],["C","G"],["G","D"],["C","G"]],"rowsConcert":[["C","G"],["F","C"],["C","G"],["F","C"]]},{"name":"Bridge","cue":"Come to me, whisper sweetly","rowsWritten":[["G","D"],["C","G"],["G","D"],["C","G"],["G","D"],["C","G"],["G","D"],["C","G"]],"rowsConcert":[["C","G"],["F","C"],["C","G"],["F","C"],["C","G"],["F","C"],["C","G"],["F","C"]]},{"name":"Verse 3","cue":"Last I saw you, my heart","rowsWritten":[["G","D"],["C","G"],["G","D"],["C","G"],["G","D"],["C","G"],["G","D"],["C","G"]],"rowsConcert":[["C","G"],["F","C"],["C","G"],["F","C"],["C","G"],["F","C"],["C","G"],["F","C"]]},{"name":"Verse 4","cue":"I’ll visit you each Solstice morning","rowsWritten":[["G","D"],["C","G"],["G","D"],["C"]],"rowsConcert":[["C","G"],["F","C"],["C","G"],["F"]]}],"sections":[{"name":"Intro","lines":[{"lyric":"Intro: ","chords":[{"sym":"G","pos":7},{"sym":"D","pos":7},{"sym":"C","pos":7},{"sym":"G","pos":7}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"Lai de  dai dai da  dai","chords":[{"sym":"G","pos":7},{"sym":"D","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":"Lai de  dai dai da  dai","chords":[{"sym":"C","pos":7},{"sym":"G","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":"Lai de  dai la  dai hai","chords":[{"sym":"G","pos":7},{"sym":"D","pos":15}],"annotations":[],"chordsOnly":false},{"lyric":"La  dai lai de  dai","chords":[{"sym":"C","pos":3},{"sym":"G","pos":15}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 1","lines":[{"lyric":"Do you  dream of life be-  fore?","chords":[{"sym":"G","pos":7},{"sym":"D","pos":26}],"annotations":[],"chordsOnly":false},{"lyric":"Do you  weep? Weep no  more","chords":[{"sym":"C","pos":7},{"sym":"G","pos":22}],"annotations":[],"chordsOnly":false},{"lyric":"Nightin-  gale, sing the  way","chords":[{"sym":"G","pos":9},{"sym":"D","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":"And rise  forth from your  grave","chords":[{"sym":"C","pos":9},{"sym":"G","pos":26}],"annotations":[],"chordsOnly":false},{"lyric":"When I  saw you across the  meadow","chords":[{"sym":"G","pos":7},{"sym":"D","pos":27}],"annotations":[],"chordsOnly":false},{"lyric":"A thousand  songbirds filled the  air","chords":[{"sym":"C","pos":11},{"sym":"G","pos":33}],"annotations":[],"chordsOnly":false},{"lyric":"Dancing  free along the  flowing stream","chords":[{"sym":"G","pos":8},{"sym":"D","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"With  flowers in your  hair","chords":[{"sym":"C","pos":5},{"sym":"G","pos":22}],"annotations":[],"chordsOnly":false},{"lyric":"Then the  Spring turned into  Summer","chords":[{"sym":"G","pos":9},{"sym":"D","pos":29}],"annotations":[],"chordsOnly":false},{"lyric":"Our bodies  hummed until the  dawn","chords":[{"sym":"C","pos":11},{"sym":"G","pos":29}],"annotations":[],"chordsOnly":false},{"lyric":"Resting  bare beneath the  Wizard Tree","chords":[{"sym":"G","pos":8},{"sym":"D","pos":26}],"annotations":[],"chordsOnly":false},{"lyric":"You  sang this simple  song","chords":[{"sym":"C","pos":4},{"sym":"G","pos":22}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 2","lines":[{"lyric":"The rain was  falling, the pixies  calling","chords":[{"sym":"G","pos":13},{"sym":"D","pos":34}],"annotations":[],"chordsOnly":false},{"lyric":"Pure en-  chantment filled the  vale","chords":[{"sym":"C","pos":9},{"sym":"G","pos":31}],"annotations":[],"chordsOnly":false},{"lyric":"Eyes so  green, your black hair  wild and free","chords":[{"sym":"G","pos":8},{"sym":"D","pos":32}],"annotations":[],"chordsOnly":false},{"lyric":"And I  called you, my  Nightingale","chords":[{"sym":"C","pos":6},{"sym":"G","pos":22}],"annotations":[],"chordsOnly":false}]},{"name":"Bridge","lines":[{"lyric":"Come to  me, whisper  sweetly","chords":[{"sym":"G","pos":8},{"sym":"D","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"Be mine  completely, my Nightin-  gale","chords":[{"sym":"C","pos":8},{"sym":"G","pos":33}],"annotations":[],"chordsOnly":false},{"lyric":" Softly, whisper  to me","chords":[{"sym":"G","pos":0},{"sym":"D","pos":17}],"annotations":[],"chordsOnly":false},{"lyric":"Can you feel the  beat, sweet Nightin-  gale?","chords":[{"sym":"C","pos":17},{"sym":"G","pos":39}],"annotations":[],"chordsOnly":false},{"lyric":" One day, we’ll sail  away now","chords":[{"sym":"G","pos":0},{"sym":"D","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"Don’t de-  lay now, my Nightin-  gale","chords":[{"sym":"C","pos":10},{"sym":"G","pos":32}],"annotations":[],"chordsOnly":false},{"lyric":" I never dreamed you’d  leave me","chords":[{"sym":"G","pos":0},{"sym":"D","pos":23}],"annotations":[],"chordsOnly":false},{"lyric":"Rest in  peace, sweet Nightin-  gale","chords":[{"sym":"C","pos":8},{"sym":"G","pos":31}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 3","lines":[{"lyric":"Last I  saw you, my heart was  Winter","chords":[{"sym":"G","pos":7},{"sym":"D","pos":30}],"annotations":[],"chordsOnly":false},{"lyric":"When the  light left your  eyes","chords":[{"sym":"C","pos":9},{"sym":"G","pos":26}],"annotations":[],"chordsOnly":false},{"lyric":"Hear her  call, the Banshee  wails her cry","chords":[{"sym":"G","pos":9},{"sym":"D","pos":28}],"annotations":[],"chordsOnly":false},{"lyric":"Or was it  one last lulla-  by?","chords":[{"sym":"C","pos":10},{"sym":"G","pos":27}],"annotations":[],"chordsOnly":false},{"lyric":"Take my  hand, little  songbird","chords":[{"sym":"G","pos":8},{"sym":"D","pos":22}],"annotations":[],"chordsOnly":false},{"lyric":"Restless  one, your coach a-  waits","chords":[{"sym":"C","pos":9},{"sym":"G","pos":29}],"annotations":[],"chordsOnly":false},{"lyric":"One last  time, I’ll kiss you  soft and deep","chords":[{"sym":"G","pos":9},{"sym":"D","pos":30}],"annotations":[],"chordsOnly":false},{"lyric":"And sing you  home to your  grave","chords":[{"sym":"C","pos":13},{"sym":"G","pos":27}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 4","lines":[{"lyric":"I’ll visit  you each Solstice  morning","chords":[{"sym":"G","pos":11},{"sym":"D","pos":30}],"annotations":[],"chordsOnly":false},{"lyric":"Where the  thistles lined your  head","chords":[{"sym":"C","pos":10},{"sym":"G","pos":31}],"annotations":[],"chordsOnly":false},{"lyric":"I’ll raise my  pipes up to the  heavens","chords":[{"sym":"G","pos":14},{"sym":"D","pos":31}],"annotations":[],"chordsOnly":false},{"lyric":"With a  song to wake the {G] dead","chords":[{"sym":"C","pos":7}],"annotations":[],"chordsOnly":false}]}]},{"id":12,"title":"Goldberry","capo":1,"tempo":null,"transpose":1,"originalArtist":null,"writtenChords":["C","G","F","Am","G7"],"concertChords":["C#","G#","F#","A#m","G#7"],"cheat":[{"name":"Chorus","cue":"I sing on the water, sing","rowsWritten":[["C","G","F","Am","G"],["C","G","F","Am","G"],["C"]],"rowsConcert":[["C#","G#","F#","A#m","G#"],["C#","G#","F#","A#m","G#"],["C#"]]},{"name":"Verse 1","cue":"Lost out here, can’t find the","rowsWritten":[["F","C"],["F","C"],["F","Am"],["G7","C","G"]],"rowsConcert":[["F#","C#"],["F#","C#"],["F#","A#m"],["G#7","C#","G#"]]},{"name":"Chorus","cue":"I sing on the water, sing","rowsWritten":[["C","G","F","Am","G"],["C","G","F","Am","G"],["C"]],"rowsConcert":[["C#","G#","F#","A#m","G#"],["C#","G#","F#","A#m","G#"],["C#"]]},{"name":"Verse 2","cue":"Safe now, danger fades away.","rowsWritten":[["F","C"],["F","C"],["F","Am"],["G7","C","G"]],"rowsConcert":[["F#","C#"],["F#","C#"],["F#","A#m"],["G#7","C#","G#"]]},{"name":"Chorus","cue":"I sing on the water, sing","rowsWritten":[["C","G","F","Am","G"],["C","G","F","Am","G"],["C"]],"rowsConcert":[["C#","G#","F#","A#m","G#"],["C#","G#","F#","A#m","G#"],["C#"]]},{"name":"Verse 3","cue":"Night wanes, dawn brings the light.","rowsWritten":[["F","C"],["F","C"],["F","Am"],["G7","C","G"]],"rowsConcert":[["F#","C#"],["F#","C#"],["F#","A#m"],["G#7","C#","G#"]]},{"name":"Chorus","cue":"I sing on the water, sing","rowsWritten":[["C","G","F","Am","G"],["C","G","F","Am","G"],["C"]],"rowsConcert":[["C#","G#","F#","A#m","G#"],["C#","G#","F#","A#m","G#"],["C#"]]}],"sections":[{"name":"Chorus","lines":[{"lyric":"I sing on the  water, sing to the River  Daughter, I’ve come to her  alter with  enchanted  stones.","chords":[{"sym":"C","pos":14},{"sym":"G","pos":40},{"sym":"F","pos":68},{"sym":"Am","pos":80},{"sym":"G","pos":91}],"annotations":[],"chordsOnly":false},{"lyric":"I sing on the  water, sing to the River  Daughter, I can’t help but  want her, cause she   feels like  home.","chords":[{"sym":"C","pos":14},{"sym":"G","pos":40},{"sym":"F","pos":68},{"sym":"Am","pos":90},{"sym":"G","pos":102}],"annotations":[],"chordsOnly":false},{"lyric":"She feels like  home.","chords":[{"sym":"C","pos":15}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 1","lines":[{"lyric":" Lost out here, can’t find the  path.","chords":[{"sym":"F","pos":0},{"sym":"C","pos":31}],"annotations":[],"chordsOnly":false},{"lyric":"I’m  sinking and I’m fading  fast.","chords":[{"sym":"F","pos":4},{"sym":"C","pos":28}],"annotations":[],"chordsOnly":false},{"lyric":"A  voice cries out, I see the light,  someone just saved my life.","chords":[{"sym":"F","pos":2},{"sym":"Am","pos":37}],"annotations":[],"chordsOnly":false},{"lyric":"I’m  trying to find the words to make it  right. ","chords":[{"sym":"G7","pos":4},{"sym":"C","pos":41},{"sym":"G","pos":49}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"I sing on the  water, sing to the River  Daughter, I’ve come to her  alter with  enchanted  stones.","chords":[{"sym":"C","pos":14},{"sym":"G","pos":40},{"sym":"F","pos":68},{"sym":"Am","pos":80},{"sym":"G","pos":91}],"annotations":[],"chordsOnly":false},{"lyric":"I sing on the  water, sing to the River  Daughter, I can’t help but  want her, cause she   feels like  home.","chords":[{"sym":"C","pos":14},{"sym":"G","pos":40},{"sym":"F","pos":68},{"sym":"Am","pos":90},{"sym":"G","pos":102}],"annotations":[],"chordsOnly":false},{"lyric":"She feels like  home.","chords":[{"sym":"C","pos":15}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 2","lines":[{"lyric":" Safe now, danger fades  away.","chords":[{"sym":"F","pos":0},{"sym":"C","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":" Goldberry tells me I’m  okay.","chords":[{"sym":"F","pos":0},{"sym":"C","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"A  raging fire, we dance all night, her  hair is golden-white","chords":[{"sym":"F","pos":2},{"sym":"Am","pos":40}],"annotations":[],"chordsOnly":false},{"lyric":"I’m  trying to see the magic in her  eyes ","chords":[{"sym":"G7","pos":4},{"sym":"C","pos":36},{"sym":"G","pos":42}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"I sing on the  water, sing to the River  Daughter, I’ve come to her  alter with  enchanted  stones.","chords":[{"sym":"C","pos":14},{"sym":"G","pos":40},{"sym":"F","pos":68},{"sym":"Am","pos":80},{"sym":"G","pos":91}],"annotations":[],"chordsOnly":false},{"lyric":"I sing on the  water, sing to the River  Daughter, I can’t help but  want her, cause she   feels like  home.","chords":[{"sym":"C","pos":14},{"sym":"G","pos":40},{"sym":"F","pos":68},{"sym":"Am","pos":90},{"sym":"G","pos":102}],"annotations":[],"chordsOnly":false},{"lyric":"She feels like  home.","chords":[{"sym":"C","pos":15}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 3","lines":[{"lyric":" Night wanes, dawn brings the  light.","chords":[{"sym":"F","pos":0},{"sym":"C","pos":30}],"annotations":[],"chordsOnly":false},{"lyric":" Beg her to stay but she declines.","chords":[{"sym":"F","pos":0},{"sym":"C","pos":27}],"annotations":[],"chordsOnly":false},{"lyric":"A  gentle kiss, a warm embrace, try  to say goodbye","chords":[{"sym":"F","pos":2},{"sym":"Am","pos":36}],"annotations":[],"chordsOnly":false},{"lyric":"I  finally see the magic in her  eyes ","chords":[{"sym":"G7","pos":2},{"sym":"C","pos":32},{"sym":"G","pos":38}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"I sing on the  water, sing to the River  Daughter, I’ve come to her  alter with  enchanted  stones.","chords":[{"sym":"C","pos":14},{"sym":"G","pos":40},{"sym":"F","pos":68},{"sym":"Am","pos":80},{"sym":"G","pos":91}],"annotations":[],"chordsOnly":false},{"lyric":"I sing on the  water, sing to the River  Daughter, I can’t help but  want her, cause she   feels like  home.","chords":[{"sym":"C","pos":14},{"sym":"G","pos":40},{"sym":"F","pos":68},{"sym":"Am","pos":90},{"sym":"G","pos":102}],"annotations":[],"chordsOnly":false},{"lyric":"She feels like  home.","chords":[{"sym":"C","pos":15}],"annotations":[],"chordsOnly":false}]}]},{"id":13,"title":"Neverland","capo":2,"tempo":null,"transpose":2,"originalArtist":null,"writtenChords":["G","Am7","Cadd9","D","D7"],"concertChords":["A","Bm7","Dadd9","E","E7"],"cheat":[{"name":"Verse 1","cue":"Look to the west","rowsWritten":[["G","Am7"],["Cadd9"],["G","Am7","Cadd9"],["G","Am7"],["Cadd9"],["G","Am7","Cadd9"],["G","Am7"],["Cadd9"],["G","Am7","Cadd9"],["G","Am7"],["Cadd9"],["G","Am7","Cadd9"],["G","Am7","Cadd9"]],"rowsConcert":[["A","Bm7"],["Dadd9"],["A","Bm7","Dadd9"],["A","Bm7"],["Dadd9"],["A","Bm7","Dadd9"],["A","Bm7"],["Dadd9"],["A","Bm7","Dadd9"],["A","Bm7"],["Dadd9"],["A","Bm7","Dadd9"],["A","Bm7","Dadd9"]]},{"name":"Chorus","cue":"Slow down","rowsWritten":[["G","Am7"],["Cadd9"],["G","Am7"],["Cadd9"],["G","Am7"],["Cadd9"],["G","Am7","Cadd9"],["G","Am7","Cadd9"]],"rowsConcert":[["A","Bm7"],["Dadd9"],["A","Bm7"],["Dadd9"],["A","Bm7"],["Dadd9"],["A","Bm7","Dadd9"],["A","Bm7","Dadd9"]]},{"name":"Verse 2","cue":"You pause to fly","rowsWritten":[["G","Am7"],["Cadd9"],["G","Am7","Cadd9"],["G","Am7"],["Cadd9"],["G","Am7","Cadd9"],["G","Am7","Cadd9"]],"rowsConcert":[["A","Bm7"],["Dadd9"],["A","Bm7","Dadd9"],["A","Bm7"],["Dadd9"],["A","Bm7","Dadd9"],["A","Bm7","Dadd9"]]},{"name":"Bridge","cue":"All the world is faith and","rowsWritten":[["D","G"],["D","G"],["D","G"],["D","D7"]],"rowsConcert":[["E","A"],["E","A"],["E","A"],["E","E7"]]},{"name":"Ending","cue":"If I pause to fly","rowsWritten":[["G","Am7"],["Cadd9"],["G","Am7","Cadd9"],["G","Am7","Cadd9"],["G","Am7","Cadd9"]],"rowsConcert":[["A","Bm7"],["Dadd9"],["A","Bm7","Dadd9"],["A","Bm7","Dadd9"],["A","Bm7","Dadd9"]]}],"sections":[{"name":"Verse 1","lines":[{"lyric":" Look to the  west","chords":[{"sym":"G","pos":0},{"sym":"Am7","pos":13}],"annotations":[],"chordsOnly":false},{"lyric":"The  starlight glitters","chords":[{"sym":"Cadd9","pos":4}],"annotations":[],"chordsOnly":false},{"lyric":"The  twin  shines her  light","chords":[{"sym":"G","pos":4},{"sym":"Am7","pos":10},{"sym":"Cadd9","pos":22}],"annotations":[],"chordsOnly":false},{"lyric":"She  stands  alone","chords":[{"sym":"G","pos":4},{"sym":"Am7","pos":12}],"annotations":[],"chordsOnly":false},{"lyric":"But  just see her shimmer","chords":[{"sym":"Cadd9","pos":4}],"annotations":[],"chordsOnly":false},{"lyric":" Damn, she’s  quite the  sight","chords":[{"sym":"G","pos":0},{"sym":"Am7","pos":13},{"sym":"Cadd9","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":" Turn to the  right","chords":[{"sym":"G","pos":0},{"sym":"Am7","pos":13}],"annotations":[],"chordsOnly":false},{"lyric":"See the  star that’s second","chords":[{"sym":"Cadd9","pos":8}],"annotations":[],"chordsOnly":false},{"lyric":"There’s  nothing  between but  air","chords":[{"sym":"G","pos":8},{"sym":"Am7","pos":17},{"sym":"Cadd9","pos":30}],"annotations":[],"chordsOnly":false},{"lyric":"You  pause to  fly","chords":[{"sym":"G","pos":4},{"sym":"Am7","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":"The  moment beckons","chords":[{"sym":"Cadd9","pos":4}],"annotations":[],"chordsOnly":false},{"lyric":"Just  wait, I’ll  meet you  there","chords":[{"sym":"G","pos":5},{"sym":"Am7","pos":17},{"sym":"Cadd9","pos":27}],"annotations":[],"chordsOnly":false},{"lyric":" Wait I’ll  meet you  there","chords":[{"sym":"G","pos":0},{"sym":"Am7","pos":11},{"sym":"Cadd9","pos":21}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":" Slow  down","chords":[{"sym":"G","pos":0},{"sym":"Am7","pos":6}],"annotations":[],"chordsOnly":false},{"lyric":" Fall back to me","chords":[{"sym":"Cadd9","pos":0}],"annotations":[],"chordsOnly":false},{"lyric":" Time  stalls","chords":[{"sym":"G","pos":0},{"sym":"Am7","pos":6}],"annotations":[],"chordsOnly":false},{"lyric":"I have no  words to say","chords":[{"sym":"Cadd9","pos":10}],"annotations":[],"chordsOnly":false},{"lyric":"But  who  cares","chords":[{"sym":"G","pos":4},{"sym":"Am7","pos":9}],"annotations":[],"chordsOnly":false},{"lyric":"You can  see right through me","chords":[{"sym":"Cadd9","pos":8}],"annotations":[],"chordsOnly":false},{"lyric":"And  I’m  yours  today","chords":[{"sym":"G","pos":4},{"sym":"Am7","pos":9},{"sym":"Cadd9","pos":16}],"annotations":[],"chordsOnly":false},{"lyric":" I’m  yours  today","chords":[{"sym":"G","pos":0},{"sym":"Am7","pos":5},{"sym":"Cadd9","pos":12}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 2","lines":[{"lyric":"You  pause to  fly","chords":[{"sym":"G","pos":4},{"sym":"Am7","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":"For a  moment longer","chords":[{"sym":"Cadd9","pos":6}],"annotations":[],"chordsOnly":false},{"lyric":"As  dust  lights your  hair","chords":[{"sym":"G","pos":3},{"sym":"Am7","pos":9},{"sym":"Cadd9","pos":22}],"annotations":[],"chordsOnly":false},{"lyric":"Can we  laugh? Can we  last?","chords":[{"sym":"G","pos":7},{"sym":"Am7","pos":22}],"annotations":[],"chordsOnly":false},{"lyric":"Just a  moment longer","chords":[{"sym":"Cadd9","pos":7}],"annotations":[],"chordsOnly":false},{"lyric":"And  wait, I’ll  meet you  there","chords":[{"sym":"G","pos":4},{"sym":"Am7","pos":16},{"sym":"Cadd9","pos":26}],"annotations":[],"chordsOnly":false},{"lyric":" Wait I’ll  meet you  there","chords":[{"sym":"G","pos":0},{"sym":"Am7","pos":11},{"sym":"Cadd9","pos":21}],"annotations":[],"chordsOnly":false}]},{"name":"Bridge","lines":[{"lyric":"All the  world is faith and  trust","chords":[{"sym":"D","pos":8},{"sym":"G","pos":28}],"annotations":[],"chordsOnly":false},{"lyric":"With just a  pinch of pixie  dust","chords":[{"sym":"D","pos":12},{"sym":"G","pos":28}],"annotations":[],"chordsOnly":false},{"lyric":"But all  children grow  up","chords":[{"sym":"D","pos":8},{"sym":"G","pos":23}],"annotations":[],"chordsOnly":false},{"lyric":" Up ","chords":[{"sym":"D","pos":0},{"sym":"D7","pos":4}],"annotations":[],"chordsOnly":false}]},{"name":"Ending","lines":[{"lyric":"If I  pause to  fly","chords":[{"sym":"G","pos":5},{"sym":"Am7","pos":15}],"annotations":[],"chordsOnly":false},{"lyric":"For a  moment longer","chords":[{"sym":"Cadd9","pos":6}],"annotations":[],"chordsOnly":false},{"lyric":"Just  wait I’ll  meet you  there","chords":[{"sym":"G","pos":5},{"sym":"Am7","pos":16},{"sym":"Cadd9","pos":26}],"annotations":[],"chordsOnly":false},{"lyric":" Wait I’ll  meet you  there","chords":[{"sym":"G","pos":0},{"sym":"Am7","pos":11},{"sym":"Cadd9","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":" Wait I’ll  meet you  there","chords":[{"sym":"G","pos":0},{"sym":"Am7","pos":11},{"sym":"Cadd9","pos":21}],"annotations":[],"chordsOnly":false}]}]},{"id":15,"title":"Kids’ Song","capo":null,"tempo":null,"transpose":0,"originalArtist":null,"writtenChords":["A","D","E"],"concertChords":["A","D","E"],"cheat":[{"name":"Verse 1","cue":"Go out into the world and","rowsWritten":[["A","D","A","E"],["A","D","A","E"]],"rowsConcert":[["A","D","A","E"],["A","D","A","E"]]},{"name":"Chorus","cue":"It’s a long and winding road,","rowsWritten":[["D","A","E","A"],["D","A","E","A"]],"rowsConcert":[["D","A","E","A"],["D","A","E","A"]]},{"name":"Verse 2","cue":"Search inside your self and mind","rowsWritten":[["A","D","A","E"],["A","D","A","E"]],"rowsConcert":[["A","D","A","E"],["A","D","A","E"]]},{"name":"Chorus","cue":"It’s a long and winding road,","rowsWritten":[["D","A","E","A"],["D","A","E","A"]],"rowsConcert":[["D","A","E","A"],["D","A","E","A"]]},{"name":"Verse 3","cue":"Say the things you mean and","rowsWritten":[["A","D","A","E"],["A","D","A","E"]],"rowsConcert":[["A","D","A","E"],["A","D","A","E"]]},{"name":"Chorus","cue":"It’s a long and winding road,","rowsWritten":[["D","A","E","A"],["D","A","E","A"],["E","A"],["E","A"]],"rowsConcert":[["D","A","E","A"],["D","A","E","A"],["E","A"],["E","A"]]}],"sections":[{"name":"Verse 1","lines":[{"lyric":"Go out into the  world and  find a boy or  girl","chords":[{"sym":"A","pos":0},{"sym":"D","pos":16},{"sym":"A","pos":27},{"sym":"E","pos":42}],"annotations":[],"chordsOnly":false},{"lyric":"Be brave, but not too  brave, be safe, but not too  safe","chords":[{"sym":"A","pos":3},{"sym":"D","pos":22},{"sym":"A","pos":33},{"sym":"E","pos":51}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"It’s a long and winding road, we got a long way to  go","chords":[{"sym":"D","pos":7},{"sym":"A","pos":24},{"sym":"E","pos":39},{"sym":"A","pos":51}],"annotations":[],"chordsOnly":false},{"lyric":"It’s not wrong, take it slow, we got a long way to  go","chords":[{"sym":"D","pos":9},{"sym":"A","pos":24},{"sym":"E","pos":39},{"sym":"A","pos":51}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 2","lines":[{"lyric":"Search inside your  self and  mind your mental  health","chords":[{"sym":"A","pos":0},{"sym":"D","pos":19},{"sym":"A","pos":29},{"sym":"E","pos":47}],"annotations":[],"chordsOnly":false},{"lyric":"Be smart, but not too  smart, go far, but not too  far","chords":[{"sym":"A","pos":3},{"sym":"D","pos":22},{"sym":"A","pos":33},{"sym":"E","pos":50}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"It’s a long and winding road, we got a long way to  go","chords":[{"sym":"D","pos":7},{"sym":"A","pos":24},{"sym":"E","pos":39},{"sym":"A","pos":51}],"annotations":[],"chordsOnly":false},{"lyric":"It’s not wrong, take it slow, we got a long way to  go","chords":[{"sym":"D","pos":9},{"sym":"A","pos":24},{"sym":"E","pos":39},{"sym":"A","pos":51}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 3","lines":[{"lyric":"Say the things you  mean and  mean the things you  say","chords":[{"sym":"A","pos":0},{"sym":"D","pos":19},{"sym":"A","pos":29},{"sym":"E","pos":50}],"annotations":[],"chordsOnly":false},{"lyric":"Work, but not too  hard and  don’t forget to  play","chords":[{"sym":"A","pos":0},{"sym":"D","pos":18},{"sym":"A","pos":28},{"sym":"E","pos":45}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"It’s a long and winding road, we got a long way to  go","chords":[{"sym":"D","pos":7},{"sym":"A","pos":24},{"sym":"E","pos":39},{"sym":"A","pos":51}],"annotations":[],"chordsOnly":false},{"lyric":"It’s not wrong, take it slow, we got a long way to  go","chords":[{"sym":"D","pos":9},{"sym":"A","pos":24},{"sym":"E","pos":39},{"sym":"A","pos":51}],"annotations":[],"chordsOnly":false},{"lyric":"We got a long way to  go","chords":[{"sym":"E","pos":9},{"sym":"A","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"We got a long way to  go","chords":[{"sym":"E","pos":9},{"sym":"A","pos":21}],"annotations":[],"chordsOnly":false}]}]},{"id":16,"title":"Silver Stream","capo":3,"tempo":null,"transpose":3,"originalArtist":null,"writtenChords":["F","G","C"],"concertChords":["G#","A#","D#"],"cheat":[{"name":"Verse 1","cue":"As I journey be- yond my","rowsWritten":[["F","G","C"],["F","G","C"],["F","G","C"],["F","G","C"],["F","G","C"]],"rowsConcert":[["G#","A#","D#"],["G#","A#","D#"],["G#","A#","D#"],["G#","A#","D#"],["G#","A#","D#"]]},{"name":"Verse 2","cue":"Sing your dream","rowsWritten":[["F","G","C"],["F","G","C"],["F","G","C"],["F","G","C"]],"rowsConcert":[["G#","A#","D#"],["G#","A#","D#"],["G#","A#","D#"],["G#","A#","D#"]]},{"name":"Chorus","cue":"Can you feel it crystal clear?","rowsWritten":[["F","G","C"],["F","G","C"],["F","G","C"],["F","G","C"],["F","G","C"],["F","G","C"]],"rowsConcert":[["G#","A#","D#"],["G#","A#","D#"],["G#","A#","D#"],["G#","A#","D#"],["G#","A#","D#"],["G#","A#","D#"]]},{"name":"Verse 3","cue":"Did you dream of the silver","rowsWritten":[["F","G","C"],["F","G","C"],["F","G","C"],["F","G","C"],["F","G","C"]],"rowsConcert":[["G#","A#","D#"],["G#","A#","D#"],["G#","A#","D#"],["G#","A#","D#"],["G#","A#","D#"]]},{"name":"Verse 4","cue":"Sing their names","rowsWritten":[["F","G","C"],["F","G","C"],["F","G","C"],["F","G","C"]],"rowsConcert":[["G#","A#","D#"],["G#","A#","D#"],["G#","A#","D#"],["G#","A#","D#"]]},{"name":"Bridge","cue":"If you could only feel me","rowsWritten":[["G","C"],["G","C"],["G","C"],["G","C"],["G","C"]],"rowsConcert":[["A#","D#"],["A#","D#"],["A#","D#"],["A#","D#"],["A#","D#"]]},{"name":"Ending","cue":"No matter how hard it seems","rowsWritten":[["F","G","C"],["F","G","C"]],"rowsConcert":[["G#","A#","D#"],["G#","A#","D#"]]}],"sections":[{"name":"Verse 1","lines":[{"lyric":"As I  journey be-  yond my  years","chords":[{"sym":"F","pos":5},{"sym":"G","pos":18},{"sym":"C","pos":27}],"annotations":[],"chordsOnly":false},{"lyric":"I  feel it  crystal  clear","chords":[{"sym":"F","pos":2},{"sym":"G","pos":11},{"sym":"C","pos":20}],"annotations":[],"chordsOnly":false},{"lyric":"All the  prophe-  cies we  paid","chords":[{"sym":"F","pos":8},{"sym":"G","pos":17},{"sym":"C","pos":26}],"annotations":[],"chordsOnly":false},{"lyric":" Sing for the  blood we  gave","chords":[{"sym":"F","pos":0},{"sym":"G","pos":14},{"sym":"C","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":" Cheers to the  mess we  made","chords":[{"sym":"F","pos":0},{"sym":"G","pos":15},{"sym":"C","pos":24}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 2","lines":[{"lyric":" Sing  your  dream","chords":[{"sym":"F","pos":0},{"sym":"G","pos":6},{"sym":"C","pos":12}],"annotations":[],"chordsOnly":false},{"lyric":"To the  sil-  ver  stream","chords":[{"sym":"F","pos":7},{"sym":"G","pos":13},{"sym":"C","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":" Make  your  wish","chords":[{"sym":"F","pos":0},{"sym":"G","pos":6},{"sym":"C","pos":12}],"annotations":[],"chordsOnly":false},{"lyric":" Live  your  bliss","chords":[{"sym":"F","pos":0},{"sym":"G","pos":6},{"sym":"C","pos":12}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"Can you  feel it  crystal  clear?","chords":[{"sym":"F","pos":8},{"sym":"G","pos":17},{"sym":"C","pos":26}],"annotations":[],"chordsOnly":false},{"lyric":"The  turning  of the  years","chords":[{"sym":"F","pos":4},{"sym":"G","pos":13},{"sym":"C","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"Come  cast  your cares a-  way","chords":[{"sym":"F","pos":5},{"sym":"G","pos":11},{"sym":"C","pos":26}],"annotations":[],"chordsOnly":false},{"lyric":"Sing  tomorrow’s  a brighter  day","chords":[{"sym":"F","pos":5},{"sym":"G","pos":17},{"sym":"C","pos":29}],"annotations":[],"chordsOnly":false},{"lyric":"Come  sail the  silver  stream","chords":[{"sym":"F","pos":5},{"sym":"G","pos":15},{"sym":"C","pos":23}],"annotations":[],"chordsOnly":false},{"lyric":" Life is  but a  dream","chords":[{"sym":"F","pos":0},{"sym":"G","pos":9},{"sym":"C","pos":16}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 3","lines":[{"lyric":"Did you  dream of the  silver  kings?","chords":[{"sym":"F","pos":8},{"sym":"G","pos":22},{"sym":"C","pos":30}],"annotations":[],"chordsOnly":false},{"lyric":" High in their  halls of  stone","chords":[{"sym":"F","pos":0},{"sym":"G","pos":15},{"sym":"C","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":"You  felt them  days be-  fore","chords":[{"sym":"F","pos":4},{"sym":"G","pos":15},{"sym":"C","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":" Chilled  white as  bone","chords":[{"sym":"F","pos":0},{"sym":"G","pos":9},{"sym":"C","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":" Bathed  soft as  gold","chords":[{"sym":"F","pos":0},{"sym":"G","pos":8},{"sym":"C","pos":17}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 4","lines":[{"lyric":" Sing  their  names","chords":[{"sym":"F","pos":0},{"sym":"G","pos":6},{"sym":"C","pos":13}],"annotations":[],"chordsOnly":false},{"lyric":"The  ones  who  remain","chords":[{"sym":"F","pos":4},{"sym":"G","pos":10},{"sym":"C","pos":15}],"annotations":[],"chordsOnly":false},{"lyric":"As we  sail  a-  way","chords":[{"sym":"F","pos":6},{"sym":"G","pos":12},{"sym":"C","pos":16}],"annotations":[],"chordsOnly":false},{"lyric":"To  ha-  vens  grey","chords":[{"sym":"F","pos":3},{"sym":"G","pos":8},{"sym":"C","pos":14}],"annotations":[],"chordsOnly":false}]},{"name":"Bridge","lines":[{"lyric":" If you could only  feel me now","chords":[{"sym":"G","pos":0},{"sym":"C","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":" Smiling by your  side","chords":[{"sym":"G","pos":0},{"sym":"C","pos":17}],"annotations":[],"chordsOnly":false},{"lyric":" Baby I could  show you how","chords":[{"sym":"G","pos":0},{"sym":"C","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":" Life is just a  ride","chords":[{"sym":"G","pos":0},{"sym":"C","pos":16}],"annotations":[],"chordsOnly":false},{"lyric":" Let go, enjoy the  ride","chords":[{"sym":"G","pos":0},{"sym":"C","pos":19}],"annotations":[],"chordsOnly":false}]},{"name":"Ending","lines":[{"lyric":"No  matter how  hard it  seems","chords":[{"sym":"F","pos":3},{"sym":"G","pos":15},{"sym":"C","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":" Life is  but a  dream","chords":[{"sym":"F","pos":0},{"sym":"G","pos":9},{"sym":"C","pos":16}],"annotations":[],"chordsOnly":false}]}]},{"id":17,"title":"Come Rest, Ye Saints","capo":null,"tempo":null,"transpose":0,"originalArtist":null,"writtenChords":["C","Am","F","G"],"concertChords":["C","Am","F","G"],"cheat":[{"name":"Verse 1","cue":"Come, come, ye saints, lay down","rowsWritten":[["C","Am","F","G"],["C","F","G"],["C","Am","F","G"],["C","F","G"]],"rowsConcert":[["C","Am","F","G"],["C","F","G"],["C","Am","F","G"],["C","F","G"]]},{"name":"Verse 2","cue":"No new found king to light","rowsWritten":[["C","Am","F","G"],["C","F","G"],["C","Am","F","G"],["C","F","G"]],"rowsConcert":[["C","Am","F","G"],["C","F","G"],["C","Am","F","G"],["C","F","G"]]},{"name":"Chorus","cue":"Oh, rest now, rest now,","rowsWritten":[["Am","F"],["C","G"],["Am","F"],["C","G","C"]],"rowsConcert":[["Am","F"],["C","G"],["Am","F"],["C","G","C"]]},{"name":"Verse 3","cue":"No walls remain, no iron rod","rowsWritten":[["C","Am","F","G"],["C","F","G"],["C","Am","F","G"],["C","F","G"]],"rowsConcert":[["C","Am","F","G"],["C","F","G"],["C","Am","F","G"],["C","F","G"]]},{"name":"Chorus","cue":"Oh, rest now, rest now,","rowsWritten":[["Am","F"],["C","G"],["Am","F"],["C","G","C"]],"rowsConcert":[["Am","F"],["C","G"],["Am","F"],["C","G","C"]]},{"name":"Verse 4","cue":"So lay your burdens on the","rowsWritten":[["C","Am","F","G"],["C","F","G"],["C","Am","F","G"],["C","F","G"]],"rowsConcert":[["C","Am","F","G"],["C","F","G"],["C","Am","F","G"],["C","F","G"]]},{"name":"Chorus","cue":"Oh, rest now, rest now,","rowsWritten":[["Am","F"],["C","G"],["Am","F"],["C","G","C"],["Am","F"],["C","G"],["Am","F"],["C","G","C"]],"rowsConcert":[["Am","F"],["C","G"],["Am","F"],["C","G","C"],["Am","F"],["C","G"],["Am","F"],["C","G","C"]]}],"sections":[{"name":"Verse 1","lines":[{"lyric":"Come, come, ye saints, lay down your load","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":15},{"sym":"F","pos":23},{"sym":"G","pos":37}],"annotations":[],"chordsOnly":false},{"lyric":"Don’t settle your soul to this road","chords":[{"sym":"C","pos":6},{"sym":"F","pos":18},{"sym":"G","pos":31}],"annotations":[],"chordsOnly":false},{"lyric":"The burden you bear is not your own","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":15},{"sym":"F","pos":23},{"sym":"G","pos":32}],"annotations":[],"chordsOnly":false},{"lyric":"You’ve carried it far too long","chords":[{"sym":"C","pos":7},{"sym":"F","pos":18},{"sym":"G","pos":26}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 2","lines":[{"lyric":"No new found king to light your fall","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":13},{"sym":"F","pos":21},{"sym":"G","pos":32}],"annotations":[],"chordsOnly":false},{"lyric":"No debtors left to call","chords":[{"sym":"C","pos":3},{"sym":"F","pos":11},{"sym":"G","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":"Come breathe, oh saints, let the music sway","chords":[{"sym":"C","pos":5},{"sym":"Am","pos":17},{"sym":"F","pos":33},{"sym":"G","pos":39}],"annotations":[],"chordsOnly":false},{"lyric":"Let love light your way.","chords":[{"sym":"C","pos":4},{"sym":"F","pos":9},{"sym":"G","pos":20}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"Oh, rest now, rest now,","chords":[{"sym":"Am","pos":4},{"sym":"F","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":"The river knows your pain.","chords":[{"sym":"C","pos":4},{"sym":"G","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"Oh, rest now, rest now,","chords":[{"sym":"Am","pos":4},{"sym":"F","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":"The night will sing your name.","chords":[{"sym":"C","pos":4},{"sym":"G","pos":15},{"sym":"C","pos":25}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 3","lines":[{"lyric":"No walls remain, no iron rod","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":9},{"sym":"F","pos":20},{"sym":"G","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":"No changing word of god","chords":[{"sym":"C","pos":3},{"sym":"F","pos":12},{"sym":"G","pos":20}],"annotations":[],"chordsOnly":false},{"lyric":"The sky and  stream and  land and  blue","chords":[{"sym":"C","pos":4},{"sym":"Am","pos":12},{"sym":"F","pos":24},{"sym":"G","pos":34}],"annotations":[],"chordsOnly":false},{"lyric":"Are  calling  out to you.","chords":[{"sym":"C","pos":4},{"sym":"F","pos":13},{"sym":"G","pos":21}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"Oh, rest now, rest now,","chords":[{"sym":"Am","pos":4},{"sym":"F","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":"The river knows your pain.","chords":[{"sym":"C","pos":4},{"sym":"G","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"Oh, rest now, rest now,","chords":[{"sym":"Am","pos":4},{"sym":"F","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":"The night will sing your name.","chords":[{"sym":"C","pos":4},{"sym":"G","pos":15},{"sym":"C","pos":25}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 4","lines":[{"lyric":"So lay your  burdens  on the  deep","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":12},{"sym":"F","pos":21},{"sym":"G","pos":29}],"annotations":[],"chordsOnly":false},{"lyric":"No  promises for  you to  keep","chords":[{"sym":"C","pos":3},{"sym":"F","pos":17},{"sym":"G","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":"Be  baptized in the  pouring  rain","chords":[{"sym":"C","pos":3},{"sym":"Am","pos":7},{"sym":"F","pos":20},{"sym":"G","pos":29}],"annotations":[],"chordsOnly":false},{"lyric":"And  wash your  sins  away","chords":[{"sym":"C","pos":4},{"sym":"F","pos":15},{"sym":"G","pos":21}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"Oh, rest now, rest now,","chords":[{"sym":"Am","pos":4},{"sym":"F","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":"The river knows your pain.","chords":[{"sym":"C","pos":4},{"sym":"G","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"Oh, rest now, rest now,","chords":[{"sym":"Am","pos":4},{"sym":"F","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":"The night will sing your name.","chords":[{"sym":"C","pos":4},{"sym":"G","pos":15},{"sym":"C","pos":25}],"annotations":[],"chordsOnly":false},{"lyric":"Oh, rest now, rest now,","chords":[{"sym":"Am","pos":4},{"sym":"F","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":"The river knows your pain.","chords":[{"sym":"C","pos":4},{"sym":"G","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"Oh, rest now, rest now,","chords":[{"sym":"Am","pos":4},{"sym":"F","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":"The night will sing your name.","chords":[{"sym":"C","pos":4},{"sym":"G","pos":15},{"sym":"C","pos":25}],"annotations":[],"chordsOnly":false}]}]},{"id":18,"title":"Fred Flintstone","capo":3,"tempo":null,"transpose":3,"originalArtist":null,"writtenChords":["C","Am","G","F"],"concertChords":["D#","Cm","A#","G#"],"cheat":[{"name":"Verse 1","cue":"I’ve been looking for something new","rowsWritten":[["C","Am"],["C","G"],["C","Am"],["C","G"]],"rowsConcert":[["D#","Cm"],["D#","A#"],["D#","Cm"],["D#","A#"]]},{"name":"Chorus","cue":"So I rolled it up and","rowsWritten":[["F","C","G","C"],["F","C","G","C"],["F","C","G"],["F","C","G"],["F","C","G"]],"rowsConcert":[["G#","D#","A#","D#"],["G#","D#","A#","D#"],["G#","D#","A#"],["G#","D#","A#"],["G#","D#","A#"]]},{"name":"Verse 2","cue":"We’ve been going through something lately","rowsWritten":[["C","Am"],["C","G"],["C","Am"],["C","G"]],"rowsConcert":[["D#","Cm"],["D#","A#"],["D#","Cm"],["D#","A#"]]},{"name":"Chorus","cue":"So I rolled it up and","rowsWritten":[["F","C","G","C"],["F","C","G","C"],["F","C","G"],["F","C","G"],["F","C","G"]],"rowsConcert":[["G#","D#","A#","D#"],["G#","D#","A#","D#"],["G#","D#","A#"],["G#","D#","A#"],["G#","D#","A#"]]},{"name":"Verse 3","cue":"Maybe we can do this together","rowsWritten":[["C","Am"],["C","G"],["C","Am"],["C","G"]],"rowsConcert":[["D#","Cm"],["D#","A#"],["D#","Cm"],["D#","A#"]]},{"name":"Chorus","cue":"So let’s roll it up and","rowsWritten":[["F","C","G","C"],["F","C","G","C"],["F","C","G"],["F","C","G"],["F","C","G"]],"rowsConcert":[["G#","D#","A#","D#"],["G#","D#","A#","D#"],["G#","D#","A#"],["G#","D#","A#"],["G#","D#","A#"]]},{"name":"Second Chorus","cue":"And I’m Fred Flint Stone","rowsWritten":[["F","C","G"],["F","C","G"],["F","C","G"],["F","C","G"],["F","C","G"],["F","C","G"],["F","C","G"]],"rowsConcert":[["G#","D#","A#"],["G#","D#","A#"],["G#","D#","A#"],["G#","D#","A#"],["G#","D#","A#"],["G#","D#","A#"],["G#","D#","A#"]]}],"sections":[{"name":"Verse 1","lines":[{"lyric":"I’ve been looking for something new","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":32}],"annotations":[],"chordsOnly":false},{"lyric":"Trying to get closer to  you","chords":[{"sym":"C","pos":0},{"sym":"G","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"Most days I’ve been just getting wasted","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":33}],"annotations":[],"chordsOnly":false},{"lyric":" Searching for that high that I’m  chasing","chords":[{"sym":"C","pos":0},{"sym":"G","pos":34}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"So I  rolled it up and I  smoked it up,  looking for love feels like  dealing drugs","chords":[{"sym":"F","pos":5},{"sym":"C","pos":25},{"sym":"G","pos":40},{"sym":"C","pos":69}],"annotations":[],"chordsOnly":false},{"lyric":"Look I’ve  stole some stuff and I’ve  sold some stuff,  all I ever learned was its  never enough but","chords":[{"sym":"F","pos":10},{"sym":"C","pos":37},{"sym":"G","pos":55},{"sym":"C","pos":83}],"annotations":[],"chordsOnly":false},{"lyric":"I  cannot  hide","chords":[{"sym":"F","pos":2},{"sym":"C","pos":6},{"sym":"G","pos":10}],"annotations":[],"chordsOnly":false},{"lyric":"I’ll  shine  my  light","chords":[{"sym":"F","pos":5},{"sym":"C","pos":12},{"sym":"G","pos":16}],"annotations":[],"chordsOnly":false},{"lyric":"I’m  burning  bright","chords":[{"sym":"F","pos":4},{"sym":"C","pos":9},{"sym":"G","pos":13}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 2","lines":[{"lyric":"We’ve been going through something lately","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":35}],"annotations":[],"chordsOnly":false},{"lyric":"Ain’t nobody coming to  save me","chords":[{"sym":"C","pos":0},{"sym":"G","pos":23}],"annotations":[],"chordsOnly":false},{"lyric":"Climbing up this hill for ages","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":26}],"annotations":[],"chordsOnly":false},{"lyric":" Sometimes it feels like we’re still  strangers","chords":[{"sym":"C","pos":0},{"sym":"G","pos":37}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"So I  rolled it up and I  smoked it up,  looking for love feels like  dealing drugs","chords":[{"sym":"F","pos":5},{"sym":"C","pos":25},{"sym":"G","pos":40},{"sym":"C","pos":69}],"annotations":[],"chordsOnly":false},{"lyric":"Look I’ve  stole some stuff and I’ve  sold some stuff,  all I ever learned was its  never enough but","chords":[{"sym":"F","pos":10},{"sym":"C","pos":37},{"sym":"G","pos":55},{"sym":"C","pos":83}],"annotations":[],"chordsOnly":false},{"lyric":"I  cannot  hide","chords":[{"sym":"F","pos":2},{"sym":"C","pos":6},{"sym":"G","pos":10}],"annotations":[],"chordsOnly":false},{"lyric":"I’ll  shine  my  light","chords":[{"sym":"F","pos":5},{"sym":"C","pos":12},{"sym":"G","pos":16}],"annotations":[],"chordsOnly":false},{"lyric":"I’m  burning  bright","chords":[{"sym":"F","pos":4},{"sym":"C","pos":9},{"sym":"G","pos":13}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 3","lines":[{"lyric":"Maybe we can do this together","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":23}],"annotations":[],"chordsOnly":false},{"lyric":"Make a moment last forever","chords":[{"sym":"C","pos":0},{"sym":"G","pos":22}],"annotations":[],"chordsOnly":false},{"lyric":"Light one up and pass it toJesus","chords":[{"sym":"C","pos":0},{"sym":"Am","pos":27}],"annotations":[],"chordsOnly":false},{"lyric":" Tokes and tells us that he believes in us","chords":[{"sym":"C","pos":0},{"sym":"G","pos":30}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"So let’s  roll it up and let’s  smoke it up,  looking for love feels like  dealing drugs","chords":[{"sym":"F","pos":9},{"sym":"C","pos":31},{"sym":"G","pos":45},{"sym":"C","pos":74}],"annotations":[],"chordsOnly":false},{"lyric":"Look I’ve  stole some stuff and I’ve  sold some stuff,  all I ever learned was its  never enough but","chords":[{"sym":"F","pos":10},{"sym":"C","pos":37},{"sym":"G","pos":55},{"sym":"C","pos":83}],"annotations":[],"chordsOnly":false},{"lyric":"I  cannot  hide","chords":[{"sym":"F","pos":2},{"sym":"C","pos":6},{"sym":"G","pos":10}],"annotations":[],"chordsOnly":false},{"lyric":"I’ll  shine  my  light","chords":[{"sym":"F","pos":5},{"sym":"C","pos":12},{"sym":"G","pos":16}],"annotations":[],"chordsOnly":false},{"lyric":"I’m  burning  bright","chords":[{"sym":"F","pos":4},{"sym":"C","pos":9},{"sym":"G","pos":13}],"annotations":[],"chordsOnly":false}]},{"name":"Second Chorus","lines":[{"lyric":"And I’m  Fred  Flint  Stone","chords":[{"sym":"F","pos":8},{"sym":"C","pos":14},{"sym":"G","pos":21}],"annotations":[],"chordsOnly":false},{"lyric":"I’m  Fred  Flint  Stone","chords":[{"sym":"F","pos":4},{"sym":"C","pos":10},{"sym":"G","pos":17}],"annotations":[],"chordsOnly":false},{"lyric":"I’m  Fred  Flint  Stone","chords":[{"sym":"F","pos":4},{"sym":"C","pos":10},{"sym":"G","pos":17}],"annotations":[],"chordsOnly":false},{"lyric":" Yabba  dabba  do","chords":[{"sym":"F","pos":0},{"sym":"C","pos":7},{"sym":"G","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":" Yabba  dabba  do","chords":[{"sym":"F","pos":0},{"sym":"C","pos":7},{"sym":"G","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":" Yabba  dabba  do","chords":[{"sym":"F","pos":0},{"sym":"C","pos":7},{"sym":"G","pos":14}],"annotations":[],"chordsOnly":false},{"lyric":" Willlllll  illlllll  maaaaaa!","chords":[{"sym":"F","pos":0},{"sym":"C","pos":11},{"sym":"G","pos":21}],"annotations":[],"chordsOnly":false}]}]},{"id":19,"title":"Holy Smoke","capo":null,"tempo":null,"transpose":0,"originalArtist":null,"writtenChords":["Em","Am","C","G","D"],"concertChords":["Em","Am","C","G","D"],"cheat":[{"name":"Verse 1","cue":"My people know","rowsWritten":[["Em"],["Am","Em"],["Am","Em"],["Am","Em"],["Am","Em"],["Am","Em"]],"rowsConcert":[["Em"],["Am","Em"],["Am","Em"],["Am","Em"],["Am","Em"],["Am","Em"]]},{"name":"Chorus","cue":"We're on our way back home","rowsWritten":[["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"]],"rowsConcert":[["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"]]},{"name":"Verse 2","cue":"My people know","rowsWritten":[["Em"],["Am","Em"],["Am","Em"],["Am","Em"],["Am","Em"],["Am","Em"]],"rowsConcert":[["Em"],["Am","Em"],["Am","Em"],["Am","Em"],["Am","Em"],["Am","Em"]]},{"name":"Chorus","cue":"We're on our way back home","rowsWritten":[["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"]],"rowsConcert":[["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"]]},{"name":"Verse 3","cue":"My people know","rowsWritten":[["Em"],["Am","Em"],["Am","Em"],["Am","Em"],["Am","Em"],["Am","Em"]],"rowsConcert":[["Em"],["Am","Em"],["Am","Em"],["Am","Em"],["Am","Em"],["Am","Em"]]},{"name":"Chorus","cue":"We're on our way back home","rowsWritten":[["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"]],"rowsConcert":[["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"],["C","G","D"]]}],"sections":[{"name":"Verse 1","lines":[{"lyric":"My people know ","chords":[{"sym":"Em","pos":15}],"annotations":[],"chordsOnly":false},{"lyric":"We give  praise to the setting sun and that holy  smoke","chords":[{"sym":"Am","pos":8},{"sym":"Em","pos":49}],"annotations":[],"chordsOnly":false},{"lyric":"Our hands  raised to the tide come in and those waves that  roll.","chords":[{"sym":"Am","pos":10},{"sym":"Em","pos":59}],"annotations":[],"chordsOnly":false},{"lyric":"Beat our  drums to the sacred ways and that cosmic  joke.","chords":[{"sym":"Am","pos":9},{"sym":"Em","pos":51}],"annotations":[],"chordsOnly":false},{"lyric":"The fire  burns from within us and we're left with that holy  smoke.","chords":[{"sym":"Am","pos":9},{"sym":"Em","pos":61}],"annotations":[],"chordsOnly":false},{"lyric":"The fire  burns from within us and we're left with that holy  smoke.","chords":[{"sym":"Am","pos":9},{"sym":"Em","pos":61}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"We're on our  way  back  home","chords":[{"sym":"C","pos":13},{"sym":"G","pos":18},{"sym":"D","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"We are awake  and  strong","chords":[{"sym":"C","pos":8},{"sym":"G","pos":13},{"sym":"D","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"We been away  that  long","chords":[{"sym":"C","pos":9},{"sym":"G","pos":13},{"sym":"D","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":"We're on our  way  back  home","chords":[{"sym":"C","pos":13},{"sym":"G","pos":18},{"sym":"D","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"We're on our  way  back  home","chords":[{"sym":"C","pos":13},{"sym":"G","pos":18},{"sym":"D","pos":24}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 2","lines":[{"lyric":"My people know ","chords":[{"sym":"Em","pos":15}],"annotations":[],"chordsOnly":false},{"lyric":"We stand  firmly on the ground and feel the Earth in between our  toes.","chords":[{"sym":"Am","pos":9},{"sym":"Em","pos":65}],"annotations":[],"chordsOnly":false},{"lyric":"We lift our  heads to the sky so we can listen to the prayers we  spoke.","chords":[{"sym":"Am","pos":12},{"sym":"Em","pos":65}],"annotations":[],"chordsOnly":false},{"lyric":"I'm moon  gazing with my people celebrating all the chains that  broke.","chords":[{"sym":"Am","pos":9},{"sym":"Em","pos":64}],"annotations":[],"chordsOnly":false},{"lyric":"The fire  burns from within us and we're left with that holy  smoke.","chords":[{"sym":"Am","pos":9},{"sym":"Em","pos":61}],"annotations":[],"chordsOnly":false},{"lyric":"The fire  burns from within us and we're left with that holy  smoke.","chords":[{"sym":"Am","pos":9},{"sym":"Em","pos":61}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"We're on our  way  back  home","chords":[{"sym":"C","pos":13},{"sym":"G","pos":18},{"sym":"D","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"We are awake  and  strong","chords":[{"sym":"C","pos":8},{"sym":"G","pos":13},{"sym":"D","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"We been away  that  long","chords":[{"sym":"C","pos":9},{"sym":"G","pos":13},{"sym":"D","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":"We're on our  way  back  home","chords":[{"sym":"C","pos":13},{"sym":"G","pos":18},{"sym":"D","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"We're on our  way  back  home","chords":[{"sym":"C","pos":13},{"sym":"G","pos":18},{"sym":"D","pos":24}],"annotations":[],"chordsOnly":false}]},{"name":"Verse 3","lines":[{"lyric":"My people know ","chords":[{"sym":"Em","pos":15}],"annotations":[],"chordsOnly":false},{"lyric":"We stand  firmly on the ground and feel the Earth in between our  toes.","chords":[{"sym":"Am","pos":9},{"sym":"Em","pos":65}],"annotations":[],"chordsOnly":false},{"lyric":"We lift our  heads to the sky so we can listen to the prayers we  spoke.","chords":[{"sym":"Am","pos":12},{"sym":"Em","pos":65}],"annotations":[],"chordsOnly":false},{"lyric":"I'm moon  gazing with my people celebrating all the chains that  broke.","chords":[{"sym":"Am","pos":9},{"sym":"Em","pos":64}],"annotations":[],"chordsOnly":false},{"lyric":"The fire  burns from within us and we're left with that holy  smoke.","chords":[{"sym":"Am","pos":9},{"sym":"Em","pos":61}],"annotations":[],"chordsOnly":false},{"lyric":"The fire  burns from within us and we're left with that holy  smoke.","chords":[{"sym":"Am","pos":9},{"sym":"Em","pos":61}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"We're on our  way  back  home","chords":[{"sym":"C","pos":13},{"sym":"G","pos":18},{"sym":"D","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"We are awake  and  strong","chords":[{"sym":"C","pos":8},{"sym":"G","pos":13},{"sym":"D","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":"We been away  that  long","chords":[{"sym":"C","pos":9},{"sym":"G","pos":13},{"sym":"D","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":"We're on our  way  back  home","chords":[{"sym":"C","pos":13},{"sym":"G","pos":18},{"sym":"D","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"We're on our  way  back  home","chords":[{"sym":"C","pos":13},{"sym":"G","pos":18},{"sym":"D","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"We're on our  way  back  home","chords":[{"sym":"C","pos":13},{"sym":"G","pos":18},{"sym":"D","pos":24}],"annotations":[],"chordsOnly":false},{"lyric":"We're on our  way  back  home","chords":[{"sym":"C","pos":13},{"sym":"G","pos":18},{"sym":"D","pos":24}],"annotations":[],"chordsOnly":false}]}]},{"id":20,"title":"Try Again","capo":4,"tempo":null,"transpose":4,"originalArtist":null,"writtenChords":["G","C","Em","D","F"],"concertChords":["B","E","G#m","F#","A"],"cheat":[{"name":"Verse 1","cue":"I heard you name, my","rowsWritten":[["G","C"],["Em","D"],["G","C"],["Em","D"],["G","C"],["Em","D"],["G","C","Em","D"]],"rowsConcert":[["B","E"],["G#m","F#"],["B","E"],["G#m","F#"],["B","E"],["G#m","F#"],["B","E","G#m","F#"]]},{"name":"Chorus","cue":"Can we try to live a-","rowsWritten":[["F","G","D"],["F","G","D"],["F","G","D"],["F","G","D"],["G"]],"rowsConcert":[["A","B","F#"],["A","B","F#"],["A","B","F#"],["A","B","F#"],["B"]]}],"sections":[{"name":"Verse 1","lines":[{"lyric":" I heard you  name, my","chords":[{"sym":"G","pos":0},{"sym":"C","pos":13}],"annotations":[],"chordsOnly":false},{"lyric":" Angel  a pair of shooting","chords":[{"sym":"Em","pos":0},{"sym":"D","pos":7}],"annotations":[],"chordsOnly":false},{"lyric":" stars, it wasn’ like we","chords":[{"sym":"G","pos":0},{"sym":"C","pos":16}],"annotations":[],"chordsOnly":false},{"lyric":" planned it  just a memr’y of the","chords":[{"sym":"Em","pos":0},{"sym":"D","pos":12}],"annotations":[],"chordsOnly":false},{"lyric":" Earth before the  fall","chords":[{"sym":"G","pos":0},{"sym":"C","pos":18}],"annotations":[],"chordsOnly":false},{"lyric":" Uma noite que ser- a imor-","chords":[{"sym":"Em","pos":0},{"sym":"D","pos":19}],"annotations":[],"chordsOnly":false},{"lyric":" tal  ","chords":[{"sym":"G","pos":0},{"sym":"C","pos":5},{"sym":"Em","pos":6},{"sym":"D","pos":6}],"annotations":[],"chordsOnly":false}]},{"name":"Chorus","lines":[{"lyric":"Can we  try to  live a- gain?","chords":[{"sym":"F","pos":7},{"sym":"G","pos":15},{"sym":"D","pos":23}],"annotations":[],"chordsOnly":false},{"lyric":"Can we  try to  love a- gain?","chords":[{"sym":"F","pos":7},{"sym":"G","pos":15},{"sym":"D","pos":23}],"annotations":[],"chordsOnly":false},{"lyric":"Can we  try to  fly a- gain?","chords":[{"sym":"F","pos":7},{"sym":"G","pos":15},{"sym":"D","pos":22}],"annotations":[],"chordsOnly":false},{"lyric":"Can we  try to  love a- gain?","chords":[{"sym":"F","pos":7},{"sym":"G","pos":15},{"sym":"D","pos":23}],"annotations":[],"chordsOnly":false},{"lyric":"Honey it’s  time","chords":[{"sym":"G","pos":11}],"annotations":[],"chordsOnly":false}]}]}]};
+
+/* ============================================================
+   ChordLyricLine — chords on their OWN line above the lyric,
+   larger and bolder, placed over the syllable where the change
+   lands. Monospace grid keeps alignment exact.
+   ============================================================ */
+function ChordLyricLine({ line, semis }) {
+  const lyric = line.lyric || "";
+  const chords = line.chords || [];
+  const annotations = line.annotations || [];
+
+  if (line.chordsOnly || (!lyric.trim() && chords.length)) {
+    return (
+      <div className="cl-instrumental">
+        {chords.map((c, i) => (
+          <span key={i} className="cl-chip" style={{ color: chordColor(transpose(c.sym, semis)) }}>
+            {transpose(c.sym, semis)}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  if (!lyric.trim() && !chords.length) {
+    return <div className="cl-spacer" />;
+  }
+
+  const N = Math.max(lyric.length, ...chords.map((c) => c.pos + 1), 0);
+  const lyricCells = [];
+  for (let i = 0; i < N; i++) {
+    lyricCells.push(
+      <span className="cl-char" key={i} style={{ whiteSpace: "pre" }}>
+        {lyric[i] ?? " "}
+      </span>
+    );
+  }
+
+  const hasChords = chords.length > 0 || annotations.length > 0;
+
+  return (
+    <div className="cl-block">
+      {hasChords && (
+        <div className="cl-chordrow">
+          {chords.map((c, i) => (
+            <span
+              key={"c" + i}
+              className="cl-chord"
+              style={{ left: c.pos + "ch", color: chordColor(transpose(c.sym, semis)) }}
+            >
+              {transpose(c.sym, semis)}
+            </span>
+          ))}
+          {annotations.map((a, i) => (
+            <span key={"a" + i} className="cl-ann" style={{ left: a.pos + "ch" }}>
+              {a.text}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="cl-lyricrow">{lyricCells}</div>
+    </div>
+  );
+}
+
+function FullView({ song, semis }) {
+  return (
+    <div className="full">
+      {song.sections.map((sec, si) => (
+        <section className="sec" key={si}>
+          <h3 className="sec-name">{sec.name}</h3>
+          {sec.lines.length === 0 ? (
+            <div className="sec-empty">— instrumental —</div>
+          ) : (
+            sec.lines.map((ln, li) => (
+              <ChordLyricLine line={ln} semis={semis} key={li} />
+            ))
+          )}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================
+   CHART view — grouped chord rows.
+   Each lyric line becomes a row of chords. Identical adjacent
+   rows collapse into "C F  x8". Distinct rows stack so changes
+   read line by line.
+   ============================================================ */
+function groupRows(rows) {
+  const out = [];
+  for (const r of rows) {
+    const key = r.join(" ");
+    const last = out[out.length - 1];
+    if (last && last.key === key) {
+      last.count += 1;
+    } else {
+      out.push({ key, chords: r, count: 1 });
+    }
+  }
+  return out;
+}
+
+function ChartView({ song, useWritten }) {
+  return (
+    <div className="chart">
+      {song.cheat.map((sec, i) => {
+        const rows = useWritten ? sec.rowsWritten : sec.rowsConcert;
+        const grouped = groupRows(rows);
+        return (
+          <div className="chart-row" key={i}>
+            <div className="chart-secname">{sec.name}</div>
+            <div className="chart-body">
+              {grouped.length === 0 ? (
+                <div className="chart-line"><span className="chart-noch">&mdash;</span></div>
+              ) : (
+                grouped.map((g, j) => (
+                  <div className="chart-line" key={j}>
+                    <span className="chart-chords">
+                      {g.chords.map((ch, k) => (
+                        <span key={k} className="chart-chord" style={{ color: chordColor(ch) }}>
+                          {ch}
+                        </span>
+                      ))}
+                    </span>
+                    {g.count > 1 && <span className="chart-count">&times;{g.count}</span>}
+                  </div>
+                ))
+              )}
+              {sec.cue && <div className="chart-cue">{sec.cue}&hellip;</div>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function SourceView({ song }) {
+  return (
+    <div className="source">
+      {song.sections.map((sec, si) => (
+        <section className="src-sec" key={si}>
+          <div className="src-secname">{`{${sec.name}}`}</div>
+          {sec.lines.length === 0 ? (
+            <div className="src-empty">(instrumental)</div>
+          ) : (
+            sec.lines.map((ln, li) => {
+              const lyric = ln.lyric || "";
+              const marks = [
+                ...(ln.chords || []).map((c) => ({ pos: c.pos, txt: `[${c.sym}]` })),
+                ...(ln.annotations || []).map((a) => ({ pos: a.pos, txt: `[${a.text}]` })),
+              ].sort((a, b) => a.pos - b.pos || 0);
+              let out = "";
+              let cursor = 0;
+              marks.forEach((m) => {
+                out += lyric.slice(cursor, m.pos) + m.txt;
+                cursor = m.pos;
+              });
+              out += lyric.slice(cursor);
+              return <div className="src-line" key={li}>{out || "\u00A0"}</div>;
+            })
+          )}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================
+   Styles
+   ============================================================ */
+const CSS = `
+:root{
+  --bg:#15161a;
+  --bg2:#1c1e24;
+  --panel:#22242c;
+  --line:#33363f;
+  --ink:#ECE6D8;
+  --ink-dim:#9a9588;
+  --ink-faint:#6c6a62;
+  --accent:#FF8A5C;
+  --accent2:#7CC4FF;
+}
+*{box-sizing:border-box;}
+.app{
+  min-height:100vh;
+  background:
+    radial-gradient(120% 80% at 50% -10%, #20222b 0%, var(--bg) 60%);
+  color:var(--ink);
+  font-family:"Inter","Helvetica Neue",Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.mono,.cl-lyricrow,.cl-chordrow,.cl-instrumental,.src-line,.chart-chord,.chordbar-chip{
+  font-family:"SFMono-Regular",ui-monospace,"Roboto Mono","Menlo",monospace;
+}
+
+/* ---------- masthead ---------- */
+.masthead{
+  padding:34px 20px 20px;
+  border-bottom:1px solid var(--line);
+}
+.mast-kicker{
+  font-size:11px;letter-spacing:.42em;color:var(--ink-faint);
+  font-weight:600;margin-bottom:10px;
+}
+.mast-title{
+  margin:0;font-size:38px;line-height:.98;font-weight:800;
+  letter-spacing:-.02em;
+  color:var(--ink);
+}
+.mast-sub{margin-top:10px;font-size:13px;color:var(--ink-dim);}
+
+/* ---------- setlist ---------- */
+.setlist{list-style:none;margin:0;padding:8px 12px 4px;}
+.song-item{
+  display:flex;align-items:center;gap:14px;
+  padding:14px 14px;margin:8px 0;
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:14px;
+  cursor:pointer;
+  user-select:none;
+  transition:border-color .12s, transform .06s, background .12s;
+}
+.song-item:active{transform:scale(.995);}
+.song-num{
+  font-variant-numeric:tabular-nums;
+  font-weight:700;font-size:15px;color:var(--ink-faint);
+  width:26px;text-align:right;flex:none;
+}
+.song-meta{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0;}
+.song-title{font-size:18px;font-weight:650;letter-spacing:-.01em;}
+.song-tags{font-size:12px;color:var(--ink-dim);}
+.song-nudge{display:flex;flex-direction:column;gap:4px;flex:none;}
+.nudge{
+  width:34px;height:24px;border-radius:7px;border:1px solid var(--line);
+  background:var(--bg2);color:var(--ink-dim);font-size:10px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;padding:0;
+}
+.nudge:active{background:var(--line);color:var(--ink);}
+
+.list-foot{padding:14px 20px 40px;text-align:center;}
+.ghost-btn{
+  background:transparent;border:1px solid var(--line);color:var(--ink-dim);
+  padding:10px 16px;border-radius:10px;font-size:13px;cursor:pointer;
+}
+.ghost-btn:active{background:var(--panel);}
+
+/* ---------- song screen ---------- */
+.song-head{
+  display:flex;align-items:flex-start;gap:10px;
+  padding:16px 14px 12px;border-bottom:1px solid var(--line);
+  position:sticky;top:0;background:rgba(21,22,26,.94);
+  backdrop-filter:blur(8px);z-index:5;
+}
+.back-btn{
+  background:transparent;border:none;color:var(--accent);
+  font-size:15px;font-weight:600;cursor:pointer;padding:6px 4px;flex:none;
+}
+.song-head-mid{flex:1;min-width:0;text-align:center;}
+.song-head-pos{font-size:11px;letter-spacing:.2em;color:var(--ink-faint);font-weight:600;}
+.song-head-title{margin:2px 0 6px;font-size:22px;font-weight:750;letter-spacing:-.01em;}
+.song-head-sub{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;}
+.capo-flag,.bpm-flag,.cover-flag{
+  font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;
+  border:1px solid var(--line);color:var(--ink-dim);
+}
+.capo-flag{color:var(--accent);border-color:#4a3328;}
+.capo-flag.muted{color:var(--ink-faint);border-color:var(--line);}
+.song-head-nav{display:flex;gap:6px;flex:none;}
+.navarrow{
+  width:36px;height:36px;border-radius:9px;border:1px solid var(--line);
+  background:var(--panel);color:var(--ink);font-size:18px;cursor:pointer;
+}
+.navarrow:disabled{opacity:.3;}
+
+/* ---------- chord bar ---------- */
+.chordbar{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:12px 16px;border-bottom:1px solid var(--line);background:var(--bg2);
+}
+.chordbar-label{font-size:11px;letter-spacing:.18em;color:var(--ink-faint);font-weight:600;}
+.chordbar-chip{font-size:16px;font-weight:700;}
+.capotoggle{
+  margin-left:auto;font-size:12px;font-weight:600;cursor:pointer;
+  border:1px solid var(--line);background:var(--panel);color:var(--ink-dim);
+  padding:7px 12px;border-radius:999px;
+}
+.capotoggle.on{color:var(--accent);border-color:#4a3328;}
+
+/* ---------- view tabs ---------- */
+.viewtabs{
+  display:flex;gap:6px;padding:12px 14px;position:sticky;
+  top:0;z-index:4;
+}
+.viewtab{
+  flex:1;padding:11px 0;border-radius:10px;border:1px solid var(--line);
+  background:var(--panel);color:var(--ink-dim);font-size:14px;font-weight:600;
+  cursor:pointer;
+}
+.viewtab.active{background:var(--ink);color:#15161a;border-color:var(--ink);}
+
+.song-body{padding:6px 16px 90px;}
+
+/* ---------- CHART view ---------- */
+.chart-row{
+  display:flex;gap:14px;padding:14px 0;border-bottom:1px solid var(--line);
+}
+.chart-row:last-child{border-bottom:none;}
+.chart-secname{
+  flex:none;width:84px;font-size:13px;font-weight:700;color:var(--accent2);
+  padding-top:3px;letter-spacing:.01em;
+}
+.chart-body{flex:1;min-width:0;}
+.chart-line{
+  display:flex;align-items:baseline;gap:10px;line-height:1.5;
+  padding:1px 0;
+}
+.chart-chords{
+  font-size:18px;font-weight:700;
+  display:inline-flex;gap:16px;flex-wrap:wrap;
+}
+.chart-chord{font-variant-numeric:tabular-nums;}
+.chart-count{
+  font-size:13px;font-weight:600;color:var(--ink-faint);
+  font-family:"Inter",sans-serif;
+}
+.chart-noch{color:var(--ink-faint);font-weight:400;}
+.chart-cue{margin-top:5px;font-size:13px;color:var(--ink-dim);font-style:italic;}
+
+/* ---------- FULL view (chords on their own line, big & bold) ---------- */
+.full{padding-top:6px;}
+.sec{margin:0 0 24px;}
+.sec-name{
+  margin:0 0 12px;font-size:12px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--accent2);font-weight:700;
+}
+.sec-empty{color:var(--ink-faint);font-style:italic;font-size:14px;}
+
+.cl-block{margin:0 0 14px;}
+.cl-chordrow{
+  position:relative;height:1.5em;
+  /* monospace so 'ch' units line up with the lyric row below */
+  font-family:"SFMono-Regular",ui-monospace,"Roboto Mono","Menlo",monospace;
+  font-size:18px;
+}
+.cl-chord{
+  position:absolute;bottom:0;white-space:nowrap;
+  font-size:19px;font-weight:800;letter-spacing:.01em;line-height:1;
+}
+.cl-ann{
+  position:absolute;bottom:1px;white-space:nowrap;
+  font-size:13px;font-style:italic;color:var(--ink-faint);font-weight:600;
+}
+.cl-lyricrow{
+  font-family:"SFMono-Regular",ui-monospace,"Roboto Mono","Menlo",monospace;
+  font-size:17px;line-height:1.5;white-space:pre-wrap;word-break:break-word;
+  color:var(--ink);
+}
+.cl-char{font-size:17px;}
+.cl-instrumental{display:flex;flex-wrap:wrap;gap:18px;margin:4px 0 14px;}
+.cl-chip{font-size:19px;font-weight:800;}
+.cl-spacer{height:10px;}
+
+/* ---------- SOURCE view ---------- */
+.source{padding-top:4px;}
+.src-sec{margin:0 0 18px;}
+.src-secname{
+  font-size:13px;color:var(--accent);font-weight:700;margin-bottom:6px;
+  font-family:ui-monospace,monospace;
+}
+.src-line{
+  font-size:14px;line-height:1.85;color:var(--ink);
+  white-space:pre-wrap;word-break:break-word;
+}
+.src-empty{color:var(--ink-faint);font-style:italic;font-size:13px;}
+
+@media (min-width:720px){
+  .song-body{max-width:760px;margin:0 auto;}
+  .setlist,.masthead,.list-foot{max-width:760px;margin-left:auto;margin-right:auto;}
+  .cl-lyricrow{font-size:18px;}
+  .cl-char{font-size:18px;}
+}
+@media (prefers-reduced-motion:reduce){
+  *{transition:none !important;}
+}
+`;
+
+/* ============================================================
+   App shell
+   ============================================================ */
+function App() {
+  const songs = SONG_DATA.songs;
+  const byId = React.useMemo(() => {
+    const m = {}; songs.forEach((s) => (m[s.id] = s)); return m;
+  }, [songs]);
+
+  const [order, setOrder] = useState(songs.map((s) => s.id));
+  const [capoPref, setCapoPref] = useState({}); // id -> show written capo shapes
+  const [openId, setOpenId] = useState(null);
+  const [view, setView] = useState("chart");
+
+  useEffect(() => {
+    (async () => {
+      const savedOrder = await loadJSON(ORDER_KEY, null);
+      if (Array.isArray(savedOrder)) {
+        const known = new Set(songs.map((s) => s.id));
+        const filtered = savedOrder.filter((id) => known.has(id));
+        const missing = songs.map((s) => s.id).filter((id) => !filtered.includes(id));
+        setOrder([...filtered, ...missing]);
+      }
+      const savedCapo = await loadJSON(CAPOPREF_KEY, {});
+      if (savedCapo && typeof savedCapo === "object") setCapoPref(savedCapo);
+    })();
+  }, [songs]);
+
+  const persistOrder = useCallback((next) => {
+    setOrder(next);
+    saveJSON(ORDER_KEY, next);
+  }, []);
+
+  const toggleCapo = useCallback((id) => {
+    setCapoPref((prev) => {
+      const next = { ...prev, [id]: !prev[id] };
+      saveJSON(CAPOPREF_KEY, next);
+      return next;
+    });
+  }, []);
+
+  const move = (id, dir) => {
+    const i = order.indexOf(id);
+    const j = i + dir;
+    if (j < 0 || j >= order.length) return;
+    const next = [...order];
+    [next[i], next[j]] = [next[j], next[i]];
+    persistOrder(next);
+  };
+
+  const resetOrder = () => persistOrder(songs.map((s) => s.id));
+
+  const openSong = byId[openId];
+  const semisFor = (s) => (capoPref[s.id] ? 0 : (s.transpose || 0));
+
+  return (
+    <div className="app">
+      <style>{CSS}</style>
+
+      {!openSong && (
+        <ListScreen
+          order={order}
+          byId={byId}
+          onOpen={(id) => { setOpenId(id); setView("chart"); }}
+          move={move}
+          resetOrder={resetOrder}
+        />
+      )}
+
+      {openSong && (
+        <SongScreen
+          song={openSong}
+          view={view}
+          setView={setView}
+          onBack={() => setOpenId(null)}
+          useWritten={!!capoPref[openSong.id]}
+          toggleCapo={() => toggleCapo(openSong.id)}
+          semis={semisFor(openSong)}
+          position={order.indexOf(openSong.id) + 1}
+          total={order.length}
+          goRel={(d) => {
+            const i = order.indexOf(openSong.id) + d;
+            if (i >= 0 && i < order.length) { setOpenId(order[i]); setView("chart"); }
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---- setlist screen ---- */
+function ListScreen({ order, byId, onOpen, move, resetOrder }) {
+  return (
+    <div className="list-screen">
+      <header className="masthead">
+        <div className="mast-kicker">STAGE BOOK</div>
+        <h1 className="mast-title">Bombadilio</h1>
+        <div className="mast-sub">{order.length} songs &middot; use the arrows to set the order</div>
+      </header>
+
+      <ol className="setlist">
+        {order.map((id, idx) => {
+          const s = byId[id];
+          return (
+            <li key={id} className="song-item" onClick={() => onOpen(id)}>
+              <span className="song-num">{idx + 1}</span>
+              <span className="song-meta">
+                <span className="song-title">{s.title}</span>
+                <span className="song-tags">
+                  {s.capo ? `capo ${s.capo}` : "no capo"}
+                  {s.tempo ? ` \u00b7 ${s.tempo} bpm` : ""}
+                  {s.originalArtist ? ` \u00b7 cover` : ""}
+                </span>
+              </span>
+              <span className="song-nudge" onClick={(e) => e.stopPropagation()}>
+                <button className="nudge" aria-label="Move up" onClick={() => move(id, -1)}>&#9650;</button>
+                <button className="nudge" aria-label="Move down" onClick={() => move(id, +1)}>&#9660;</button>
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+
+      <div className="list-foot">
+        <button className="ghost-btn" onClick={resetOrder}>Reset to original order</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---- single song screen ---- */
+function SongScreen(props) {
+  const { song, view, setView, onBack, useWritten, toggleCapo, semis, position, total, goRel } = props;
+  const hasCapo = !!song.capo;
+  const chordList = useWritten ? song.writtenChords : song.concertChords;
+
+  return (
+    <div className="song-screen">
+      <header className="song-head">
+        <button className="back-btn" onClick={onBack}>&lsaquo; Set</button>
+        <div className="song-head-mid">
+          <div className="song-head-pos">{position} / {total}</div>
+          <h2 className="song-head-title">{song.title}</h2>
+          <div className="song-head-sub">
+            {hasCapo ? (
+              <span className="capo-flag">Capo {song.capo}</span>
+            ) : (
+              <span className="capo-flag muted">No capo</span>
+            )}
+            {song.tempo && <span className="bpm-flag">{song.tempo} bpm</span>}
+            {song.originalArtist && <span className="cover-flag">{song.originalArtist}</span>}
+          </div>
+        </div>
+        <div className="song-head-nav">
+          <button className="navarrow" onClick={() => goRel(-1)} disabled={position <= 1}>&lsaquo;</button>
+          <button className="navarrow" onClick={() => goRel(1)} disabled={position >= total}>&rsaquo;</button>
+        </div>
+      </header>
+
+      <div className="chordbar">
+        <span className="chordbar-label">{useWritten ? "Shapes" : "Sounding"}</span>
+        {chordList.map((c, i) => (
+          <span key={i} className="chordbar-chip" style={{ color: chordColor(c) }}>{c}</span>
+        ))}
+        {hasCapo && (
+          <button className={`capotoggle${useWritten ? " on" : ""}`} onClick={toggleCapo}>
+            {useWritten ? "Guitar (capo shapes)" : "Piano (concert)"}
+          </button>
+        )}
+      </div>
+
+      <nav className="viewtabs">
+        {["chart", "full", "source"].map((v) => (
+          <button
+            key={v}
+            className={`viewtab${view === v ? " active" : ""}`}
+            onClick={() => setView(v)}
+          >
+            {v === "chart" ? "Chart" : v === "full" ? "Full" : "Source"}
+          </button>
+        ))}
+      </nav>
+
+      <main className="song-body">
+        {view === "chart" && <ChartView song={song} useWritten={useWritten} />}
+        {view === "full" && <FullView song={song} semis={semis} />}
+        {view === "source" && <SourceView song={song} />}
+      </main>
+    </div>
+  );
+}
+
+const rootEl = document.getElementById("root");
+rootEl.innerHTML = "";
+ReactDOM.createRoot(rootEl).render(React.createElement(App));
+  </script>
+</body>
+</html>
