@@ -160,47 +160,33 @@ function ChordLyricLine({ line, semis }) {
 }
 
 /* ============================================================
-   KeyboardPanel — a simplified picture of the Casio CT-S1 front
-   panel showing which tone CATEGORY button and which TONE
-   VARIATION (voicing) this song uses. Lights up the active ones.
+   KeyboardPanel — a simple dot read-out of the Casio CT-S1
+   settings: which tone CATEGORY button and which TONE VARIATION
+   (voicing) this song uses. One dot per option; the active one
+   is filled red. Order matches the panel on the keyboard.
    ============================================================ */
 const KBD_CATS = ["Piano","E.Piano 1","E.Piano 2","Organ","Keyboard","Synth","Others"];
-const KBD_VOICINGS = ["Standard","Modern","Vintage","Tone Memory"];
+const KBD_VOICINGS = ["Standard","Advanced","Modern","Vintage","Tone Memory"];
 const norm = (s) => (s || "").trim().toLowerCase();
+const DOT_ON = "🔴";   // 🔴
+const DOT_OFF = "⚪️";  // ⚪️
+
+function kbdDots(list, name, num) {
+  let idx = list.findIndex((x) => norm(x) === norm(name));
+  if (idx < 0 && num) idx = num - 1;            // fall back to the number
+  return list.map((_, i) => (i === idx ? DOT_ON : DOT_OFF)).join("");
+}
 
 function KeyboardPanel({ kbd }) {
-  const inst = norm(kbd.instrument);
-  const voi = norm(kbd.voicing);
   return (
     <div className="kbd">
-      <div className="kbd-strip">
-        <div className="kbd-col">
-          <div className="kbd-coltitle">Tone</div>
-          <div className="kbd-cats">
-            {KBD_CATS.map((c) => (
-              <span key={c} className={"kbd-btn" + (norm(c) === inst ? " on" : "")}>
-                <span className="kbd-led" />
-                <span className="kbd-btn-label">{c}</span>
-              </span>
-            ))}
-          </div>
-        </div>
-        <div className="kbd-col kbd-col-var">
-          <div className="kbd-coltitle">Tone Variation</div>
-          <div className="kbd-vars">
-            {KBD_VOICINGS.map((v) => (
-              <span key={v} className={"kbd-voi" + (norm(v) === voi ? " on" : "")}>
-                <span className="kbd-led" />
-                <span className="kbd-btn-label">{v}</span>
-              </span>
-            ))}
-          </div>
-        </div>
+      <div className="kbd-row">
+        <span className="kbd-dots">{kbdDots(KBD_CATS, kbd.instrument, kbd.instrumentNo)}</span>
+        <span className="kbd-label">{kbd.instrument} ({kbd.instrumentNo})</span>
       </div>
-      <div className="kbd-caption">
-        {kbd.instrument}{kbd.instrumentNo ? ` (${kbd.instrumentNo})` : ""}
-        {" · "}
-        {kbd.voicing}{kbd.voicingNo ? ` (${kbd.voicingNo})` : ""}
+      <div className="kbd-row">
+        <span className="kbd-dots">{kbdDots(KBD_VOICINGS, kbd.voicing, kbd.voicingNo)}</span>
+        <span className="kbd-label">{kbd.voicing} ({kbd.voicingNo})</span>
       </div>
     </div>
   );
@@ -538,48 +524,23 @@ const CSS = `
 }
 .src-empty{color:var(--ink-faint);font-style:italic;font-size:13px;}
 
-/* ---------- keyboard voice panel (Casio CT-S1 mini-map) ---------- */
+/* ---------- keyboard voice read-out (dot map) ---------- */
 .kbd{
   margin:4px 0 18px;
   border:1px solid var(--line);border-radius:14px;
-  background:linear-gradient(180deg,#2a1418 0%, #221016 100%);
-  padding:12px 12px 10px;
+  background:var(--bg2);
+  padding:12px 14px;
 }
-.kbd-strip{display:flex;gap:14px;align-items:flex-start;}
-.kbd-col{flex:1;min-width:0;}
-.kbd-col-var{flex:none;width:128px;}
-.kbd-coltitle{
-  font-size:9px;letter-spacing:.18em;text-transform:uppercase;
-  color:#c98a86;font-weight:700;margin-bottom:8px;
+.kbd-row{
+  display:flex;align-items:center;gap:12px;
+  padding:4px 0;
 }
-.kbd-cats{display:flex;flex-wrap:wrap;gap:6px;}
-.kbd-vars{display:flex;flex-direction:column;gap:6px;}
-.kbd-btn,.kbd-voi{
-  display:inline-flex;align-items:center;gap:6px;
-  padding:5px 9px;border-radius:8px;
-  border:1px solid #4a2a2e;background:#3a1d22;
-  font-size:11px;font-weight:600;color:#b89a98;
+.kbd-dots{
+  font-size:16px;line-height:1;letter-spacing:3px;
   white-space:nowrap;
 }
-.kbd-led{
-  width:7px;height:7px;border-radius:50%;flex:none;
-  background:#5a3a3e;box-shadow:inset 0 0 0 1px rgba(0,0,0,.3);
-}
-.kbd-btn.on,.kbd-voi.on{
-  border-color:#ff5a5a;color:#fff;
-  background:#5a1f24;
-}
-.kbd-btn.on .kbd-led,.kbd-voi.on .kbd-led{
-  background:#ff5a5a;box-shadow:0 0 7px 1px rgba(255,90,90,.8);
-}
-.kbd-caption{
-  margin-top:10px;padding-top:9px;border-top:1px solid #4a2a2e;
-  font-size:12px;font-weight:600;color:#e7c9c6;text-align:center;
-}
-@media (max-width:420px){
-  .kbd-strip{flex-direction:column;}
-  .kbd-col-var{width:100%;}
-  .kbd-vars{flex-direction:row;flex-wrap:wrap;}
+.kbd-label{
+  font-size:14px;font-weight:650;color:var(--ink);letter-spacing:.01em;
 }
 
 @media (min-width:720px){
